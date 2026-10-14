@@ -104,7 +104,16 @@ async function api(path, options = {}) {
     opts.body = JSON.stringify(opts.body);
     opts.headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(path, opts);
+  const writes = opts.method && opts.method !== "GET";
+  if (writes) setBusy(+1);
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch {
+    throw new Error("Nu mă pot conecta la aplicație. Verificați că fereastra pornită cu start.bat este deschisă.");
+  } finally {
+    if (writes) setBusy(-1);
+  }
   if (res.status === 401 && !path.startsWith("/api/auth/")) {
     showAuth(true);
     throw new Error("Sesiunea a expirat. Autentificați-vă din nou.");
@@ -117,6 +126,17 @@ async function api(path, options = {}) {
   }
   return data;
 }
+
+// Cât timp se salvează ceva, formularele nu pot fi trimise a doua oară (de exemplu la dublu-click).
+let pendingWrites = 0;
+function setBusy(delta) {
+  pendingWrites = Math.max(0, pendingWrites + delta);
+  document.body.classList.toggle("busy", pendingWrites > 0);
+  $$("form button[type=submit]").forEach((b) => { b.disabled = pendingWrites > 0; });
+}
+document.addEventListener("submit", (e) => {
+  if (pendingWrites > 0) { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
 
 function toast(message, type = "ok") {
   const el = document.createElement("div");

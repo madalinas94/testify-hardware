@@ -106,9 +106,24 @@ class Table:
         return None
 
 
+def decode_text(content: bytes) -> str:
+    """Excel în română salvează CSV-urile des în Windows-1250, nu în UTF-8."""
+    for encoding in ("utf-8-sig", "cp1250", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Nu pot citi textul fișierului.")
+
+
 def tables_from_csv(filename: str, content: bytes) -> list[Table]:
-    text = content.decode("utf-8-sig")
-    dialect = csv.Sniffer().sniff(text[:2000], delimiters=",;\t")
+    text = decode_text(content)
+    if not text.strip():
+        raise ValueError(f"„{filename}” este gol.")
+    try:
+        dialect = csv.Sniffer().sniff(text[:2000], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
     rows = list(csv.reader(io.StringIO(text), dialect))
     return [Table(filename, rows[0], rows[1:])] if rows else []
 

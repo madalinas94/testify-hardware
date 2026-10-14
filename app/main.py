@@ -11,9 +11,10 @@ from pathlib import Path
 
 from fastapi import (APIRouter, Cookie, Depends, FastAPI, File, Form, HTTPException, Query,
                      Response, UploadFile)
-from fastapi.responses import RedirectResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import assistant_ai, auth, calc, demo, exports, fiscal, importer, inventory
 from .db import DEFAULT_SETTINGS, DEFAULT_SUPPLIER_TERMS, get_conn, get_settings, init_db, set_setting
@@ -50,6 +51,45 @@ app = FastAPI(title="Testify Hardware", description="Aplicația internă pentru 
               lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+FIELD_NAMES = {
+    "date": "data", "amount": "suma", "quantity": "cantitatea", "unit_price": "prețul", "unit_cost": "costul",
+    "cost_total": "costul mărfii", "sale_price": "prețul de vânzare", "cost": "costul", "gross": "salariul brut",
+    "name": "numele", "code": "codul", "category": "categoria", "password": "parola", "new": "parola nouă",
+    "hire_date": "data angajării", "end_date": "data plecării", "effective_from": "data", "min_stock": "stocul minim",
+    "payment_terms": "termenul de plată", "company_name": "numele firmei", "month": "luna",
+}
+
+
+def friendly_error(error: dict) -> str:
+    """Mesajele de validare, în română și pe înțeles."""
+    field = FIELD_NAMES.get(str(error.get("loc", [""])[-1]), "câmpul")
+    kind, ctx = error.get("type", ""), error.get("ctx") or {}
+    limit = ctx.get("le", ctx.get("lt", ctx.get("ge", ctx.get("gt", ""))))
+    if isinstance(limit, float) and limit.is_integer():
+        limit = int(limit)
+    limit = f"{limit:,}".replace(",", ".") if isinstance(limit, (int, float)) else limit
+    messages = {
+        "missing": f"Completați {field}.",
+        "string_too_short": f"Completați {field}.",
+        "string_too_long": f"Textul pentru {field} este prea lung.",
+        "less_than_equal": f"Valoarea pentru {field} este prea mare (maximum {limit}).",
+        "less_than": f"Valoarea pentru {field} este prea mare.",
+        "greater_than": f"Valoarea pentru {field} trebuie să fie mai mare decât {limit}.",
+        "greater_than_equal": f"Valoarea pentru {field} trebuie să fie cel puțin {limit}.",
+        "int_parsing": f"Introduceți un număr întreg pentru {field}.",
+        "float_parsing": f"Introduceți un număr pentru {field}.",
+        "string_pattern_mismatch": f"Formatul pentru {field} nu este corect.",
+    }
+    if kind == "value_error":
+        return str(error.get("msg", "")).removeprefix("Value error, ")
+    return messages.get(kind, f"Valoarea pentru {field} nu este corectă.")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_request, exc: RequestValidationError):
+    details = list(dict.fromkeys(friendly_error(error) for error in exc.errors()))
+    return JSONResponse(status_code=422, content={"detail": " ".join(details)})
+
 
 @app.get("/", include_in_schema=False)
 def root():
@@ -61,8 +101,35 @@ def valid_date(value: str | None) -> str | None:
         return None
     if not DATE_RE.match(value):
         raise ValueError("Data trebuie să fie în formatul AAAA-LL-ZZ.")
-    date.fromisoformat(value)
+    day = date.fromisoformat(value)
+    if day.year < 2000 or day > date.today() + timedelta(days=366):
+        raise ValueError("Data nu pare corectă (prea veche sau prea departe în viitor).")
     return value
+
+
+def not_in_future(value: str) -> str:
+    """Facturile și recepțiile nu pot avea o dată din viitor."""
+    if value and value > date.today().isoformat():
+        raise ValueError("Data nu poate fi în viitor.")
+    return value
+
+
+MAX_AMOUNT = 1_000_000_000  # o sumă mai mare pe un singur document e aproape sigur o greșeală de tastare
+
+
+def ensure_stock(conn, *product_ids) -> None:
+    """Oprește operația (și o anulează) dacă ar lăsa un produs cu stoc negativ."""
+    stock = inventory.stock_on(conn, "9999-12-31")
+    for pid in {p for p in product_ids if p}:
+        if stock.get(pid, 0) < 0:
+            name = conn.execute("SELECT name FROM products WHERE id = ?", (pid,)).fetchone()["name"]
+            available = stock[pid]
+            raise HTTPException(status_code=400, detail=f"Stoc insuficient pentru „{name}”: operația ar lăsa "
+                                f"{available} buc. Faceți întâi o recepție de marfă.")
+
+
+def unique_name_error(kind: str) -> HTTPException:
+    return HTTPException(status_code=400, detail=f"Există deja {kind} cu acest nume.")
 
 
 # ---------- Autentificare ----------
@@ -226,10 +293,10 @@ class SaleIn(BaseModel):
     date: str
     product_id: int | None = None
     client_id: int | None = None
-    quantity: int | None = Field(default=None, ge=1)
-    unit_price: float | None = Field(default=None, gt=0)
-    amount: float | None = Field(default=None, gt=0)
-    cost_total: float | None = Field(default=None, ge=0)
+    quantity: int | None = Field(default=None, ge=1, le=1_000_000)
+    unit_price: float | None = Field(default=None, gt=0, le=MAX_AMOUNT)
+    amount: float | None = Field(default=None, gt=0, le=MAX_AMOUNT)
+    cost_total: float | None = Field(default=None, ge=0, le=MAX_AMOUNT)
     description: str = Field(default="", max_length=200)
     invoice_number: str | None = Field(default=None, max_length=40)
     paid: bool | None = None
@@ -237,7 +304,7 @@ class SaleIn(BaseModel):
     @field_validator("date")
     @classmethod
     def check_date(cls, value):
-        return valid_date(value)
+        return not_in_future(valid_date(value))
 
 
 def next_invoice_number(conn) -> str:
@@ -280,6 +347,13 @@ def sale_values(conn, body: SaleIn) -> dict:
     return values
 
 
+def check_invoice_unique(conn, number: str, sale_id: int | None = None) -> None:
+    clash = conn.execute("SELECT id FROM sales WHERE invoice_number = ? AND id IS NOT ?",
+                         (number, sale_id)).fetchone()
+    if clash:
+        raise HTTPException(status_code=400, detail=f"Există deja factura {number}.")
+
+
 SALE_COLUMNS = ["date", "description", "product", "quantity", "amount", "product_id", "client_id",
                 "unit_price", "unit_cost", "due_date", "paid"]
 
@@ -318,12 +392,14 @@ def get_next_invoice():
 def create_sale(body: SaleIn):
     with get_conn() as conn:
         values = sale_values(conn, body)
-        values["invoice_number"] = body.invoice_number or next_invoice_number(conn)
+        values["invoice_number"] = (body.invoice_number or "").strip() or next_invoice_number(conn)
+        check_invoice_unique(conn, values["invoice_number"])
         columns = SALE_COLUMNS + ["invoice_number"]
         cursor = conn.execute(
             f"INSERT INTO sales({', '.join(columns)}) VALUES ({', '.join('?' * len(columns))})",
             [values[column] for column in columns],
         )
+        ensure_stock(conn, values["product_id"])
         warning = stock_warning(conn, values["product_id"])
     return {"id": cursor.lastrowid, "invoice_number": values["invoice_number"], "warning": warning}
 
@@ -332,14 +408,17 @@ def create_sale(body: SaleIn):
 def update_sale(sale_id: int, body: SaleIn):
     with get_conn() as conn:
         values = sale_values(conn, body)
+        old = conn.execute("SELECT product_id FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        if not old:
+            raise HTTPException(status_code=404, detail="Vânzarea nu există.")
         if body.invoice_number:
-            values["invoice_number"] = body.invoice_number
+            values["invoice_number"] = body.invoice_number.strip()
+            check_invoice_unique(conn, values["invoice_number"], sale_id)
         cursor = conn.execute(
             f"UPDATE sales SET {', '.join(f'{column} = ?' for column in values)} WHERE id = ?",
             [*values.values(), sale_id],
         )
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Vânzarea nu există.")
+        ensure_stock(conn, values["product_id"], old["product_id"])
         warning = stock_warning(conn, values["product_id"])
     return {"ok": True, "warning": warning}
 
@@ -371,7 +450,7 @@ class ExpenseIn(BaseModel):
     date: str
     category: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=200)
-    amount: float = Field(gt=0)
+    amount: float = Field(gt=0, le=MAX_AMOUNT)
     supplier: str = Field(default="", max_length=120)
     vat_kind: str = Field(default="standard", pattern=VAT_KIND_PATTERN)
 
@@ -398,9 +477,15 @@ def list_expenses(month: str = Query(default_factory=calc.current_month, pattern
     return [dict(row) for row in rows]
 
 
+def check_category(conn, name: str) -> None:
+    if not conn.execute("SELECT 1 FROM categories WHERE name = ?", (name,)).fetchone():
+        raise HTTPException(status_code=400, detail=f"Categoria „{name}” nu există. Adăugați-o întâi.")
+
+
 @api.post("/expenses", status_code=201)
 def create_expense(body: ExpenseIn):
     with get_conn() as conn:
+        check_category(conn, body.category)
         cursor = conn.execute(
             "INSERT INTO expenses(date, category, description, amount, supplier, vat_kind) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -412,6 +497,7 @@ def create_expense(body: ExpenseIn):
 @api.put("/expenses/{expense_id}")
 def update_expense(expense_id: int, body: ExpenseIn):
     with get_conn() as conn:
+        check_category(conn, body.category)
         cursor = conn.execute(
             "UPDATE expenses SET date = ?, category = ?, description = ?, amount = ?, supplier = ?, "
             "vat_kind = ? WHERE id = ?",
@@ -475,8 +561,8 @@ class ProductIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     category: str = Field(default="", max_length=100)
     supplier: str = Field(default="", max_length=120)
-    sale_price: float = Field(ge=0)
-    cost: float = Field(ge=0)
+    sale_price: float = Field(ge=0, le=MAX_AMOUNT)
+    cost: float = Field(ge=0, le=MAX_AMOUNT)
     min_stock: int = Field(default=5, ge=0)  # pragul de alertă propus de client
     opening_stock: int = Field(default=0, ge=0)
     active: bool = True
@@ -485,8 +571,8 @@ class ProductIn(BaseModel):
 class PurchaseIn(BaseModel):
     date: str
     product_id: int
-    quantity: int = Field(ge=1)
-    unit_cost: float | None = Field(default=None, gt=0)
+    quantity: int = Field(ge=1, le=1_000_000)
+    unit_cost: float | None = Field(default=None, gt=0, le=MAX_AMOUNT)
     supplier: str = Field(default="", max_length=120)
     doc_number: str = Field(default="", max_length=40)
     paid: bool | None = None
@@ -494,7 +580,7 @@ class PurchaseIn(BaseModel):
     @field_validator("date")
     @classmethod
     def check_date(cls, value):
-        return valid_date(value)
+        return not_in_future(valid_date(value))
 
 
 @api.get("/products")
@@ -589,8 +675,11 @@ def create_purchase(body: PurchaseIn):
 @api.delete("/purchases/{purchase_id}")
 def delete_purchase(purchase_id: int):
     with get_conn() as conn:
-        if conn.execute("DELETE FROM purchases WHERE id = ?", (purchase_id,)).rowcount == 0:
+        row = conn.execute("SELECT product_id FROM purchases WHERE id = ?", (purchase_id,)).fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Recepția nu există.")
+        conn.execute("DELETE FROM purchases WHERE id = ?", (purchase_id,))
+        ensure_stock(conn, row["product_id"])
     return {"ok": True}
 
 
@@ -656,6 +745,8 @@ def update_supplier(supplier_id: int, body: SupplierIn):
         old = conn.execute("SELECT * FROM suppliers WHERE id = ?", (supplier_id,)).fetchone()
         if not old:
             raise HTTPException(status_code=404, detail="Furnizorul nu există.")
+        if conn.execute("SELECT 1 FROM suppliers WHERE name = ? AND id != ?", (body.name, supplier_id)).fetchone():
+            raise unique_name_error("un furnizor")
         conn.execute("UPDATE suppliers SET name = ?, payment_terms = ?, contact = ? WHERE id = ?",
                      (body.name, body.payment_terms, body.contact, supplier_id))
         if old["name"] != body.name:  # redenumirea se vede peste tot
@@ -720,11 +811,17 @@ def create_client(body: ClientIn):
 @api.put("/clients/{client_id}")
 def update_client(client_id: int, body: ClientIn):
     with get_conn() as conn:
-        cursor = conn.execute(
+        old = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+        if not old:
+            raise HTTPException(status_code=404, detail="Clientul nu există.")
+        if conn.execute("SELECT 1 FROM clients WHERE name = ? AND id != ?", (body.name, client_id)).fetchone():
+            raise unique_name_error("un client")
+        conn.execute(
             "UPDATE clients SET name = ?, type = ?, city = ?, agent = ?, payment_terms = ? WHERE id = ?",
             (body.name, body.type, body.city, body.agent, body.payment_terms, client_id))
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Clientul nu există.")
+        if old["payment_terms"] != body.payment_terms:  # facturile neîncasate primesc noul termen
+            conn.execute("UPDATE sales SET due_date = date(date, ?) WHERE client_id = ? AND paid = 0",
+                         (f"+{body.payment_terms} days", client_id))
     return {"ok": True}
 
 
@@ -759,6 +856,9 @@ async def import_data(files: list[UploadFile] = File(...), replace: bool = Form(
             return importer.import_files(conn, contents, replace=replace)
     except (ValueError, KeyError) as error:
         raise HTTPException(status_code=400, detail=f"Importul nu a reușit: {error}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Importul nu a reușit: fișierul pare stricat sau "
+                            "nu este un Excel/CSV valid. Nu s-a modificat nimic.")
 
 
 # ---------- Angajați și salarii ----------
@@ -774,6 +874,12 @@ class EmployeeIn(BaseModel):
     @classmethod
     def check_dates(cls, value):
         return valid_date(value)
+
+    @model_validator(mode="after")
+    def check_order(self):
+        if self.end_date and self.end_date < self.hire_date:
+            raise ValueError("Data plecării nu poate fi înaintea datei angajării.")
+        return self
 
 
 class NewEmployeeIn(EmployeeIn):
@@ -847,8 +953,14 @@ def update_employee(employee_id: int, body: EmployeeIn):
 @api.delete("/employees/{employee_id}")
 def delete_employee(employee_id: int):
     with get_conn() as conn:
-        if conn.execute("DELETE FROM employees WHERE id = ?", (employee_id,)).rowcount == 0:
+        employee = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+        if not employee:
             raise HTTPException(status_code=404, detail="Angajatul nu există.")
+        # Salariile din lunile trecute fac parte din rapoartele deja trimise: nu se șterg.
+        if employee["hire_date"] < f"{calc.current_month()}-01":
+            raise HTTPException(status_code=400, detail="Angajatul are salarii în lunile trecute. Completați "
+                                "„Data plecării” în loc să-l ștergeți, ca rapoartele vechi să rămână corecte.")
+        conn.execute("DELETE FROM employees WHERE id = ?", (employee_id,))
     return {"ok": True}
 
 

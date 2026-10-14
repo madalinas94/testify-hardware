@@ -84,7 +84,9 @@ def _write_table(sheet, headers: list[str], rows: list[list], money_cols: set[in
         cell.fill = HEADER_FILL
         cell.alignment = Alignment(vertical="center")
     for row in rows:
-        sheet.append(row)
+        # Un text care începe cu = + - @ ar fi executat de Excel ca formulă: îl păstrăm ca text.
+        sheet.append([f"'{cell}" if isinstance(cell, str) and cell[:1] in ("=", "+", "-", "@") else cell
+                      for cell in row])
         for index in money_cols:
             sheet.cell(row=sheet.max_row, column=index).number_format = MONEY
     for index, header in enumerate(headers, start=1):
