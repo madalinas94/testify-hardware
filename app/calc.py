@@ -93,20 +93,57 @@ def gross_for_month(conn: sqlite3.Connection, employee: sqlite3.Row, ym: str):
     return row["gross"] if row else None
 
 
+ABSENCE_KINDS = {"odihna": "Concediu de odihnă", "medical": "Concediu medical", "fara_plata": "Concediu fără plată"}
+
+
+def absences_for(conn: sqlite3.Connection, employee_id: int, ym: str) -> dict:
+    days = {kind: 0 for kind in ABSENCE_KINDS}
+    for row in conn.execute("SELECT kind, SUM(days) AS days FROM absences WHERE employee_id = ? AND month = ? "
+                            "GROUP BY kind", (employee_id, ym)):
+        days[row["kind"]] = row["days"]
+    return days
+
+
+def min_wage_for(employee: sqlite3.Row, settings: dict) -> float | None:
+    """Salariul minim pentru norma angajatului (cu jumătate de normă, jumătate din minim)."""
+    minimum = settings.get("min_wage")
+    if not minimum:
+        return None
+    return r2(float(minimum) * (employee["hours_per_day"] or 8) / 8)
+
+
 def payroll(conn: sqlite3.Connection, ym: str) -> dict:
+    """Statul de plată estimat. Concediul fără plată scade salariul proporțional cu zilele lipsă;
+    concediul de odihnă și cel medical se urmăresc, dar salariul rămâne (indemnizația exactă
+    pentru concediul medical o calculează contabilul)."""
+    from .ro_calendar import working_days
+
     settings = settings_for_month(conn, ym)
+    total_days = working_days(ym)
     lines = []
+    warnings = []
     for employee in conn.execute("SELECT * FROM employees ORDER BY name").fetchall():
-        gross = gross_for_month(conn, employee, ym)
-        if gross is None:
+        base = gross_for_month(conn, employee, ym)
+        if base is None:
             continue
+        absent = absences_for(conn, employee["id"], ym)
+        unpaid = min(absent["fara_plata"], total_days)
+        gross = rnd(base * (total_days - unpaid) / total_days) if unpaid else base
+        minimum = min_wage_for(employee, settings)
+        below = bool(minimum and base < minimum)
+        if below:
+            warnings.append(f"{employee['name']} are {fmt(base)} brut, sub salariul minim de {fmt(minimum)} "
+                            f"pentru norma lui.")
         lines.append(
-            {"employee_id": employee["id"], "name": employee["name"],
-             "role": employee["role"], **salary_breakdown(gross, settings)}
+            {"employee_id": employee["id"], "name": employee["name"], "role": employee["role"],
+             "base_gross": r2(base), "working_days": total_days,
+             "worked_days": total_days - sum(min(v, total_days) for v in absent.values()),
+             "absences": absent, "below_min_wage": below, **salary_breakdown(gross, settings)}
         )
     keys = ["gross", "cas", "cass", "income_tax", "net", "cam", "employer_cost"]
     totals = {key: r2(sum(line[key] for line in lines)) for key in keys}
-    return {"month": ym, "lines": lines, "totals": totals}
+    return {"month": ym, "lines": lines, "totals": totals, "working_days": total_days,
+            "min_wage": settings.get("min_wage"), "warnings": warnings}
 
 
 def vat_rate_for(kind: str, settings: dict) -> float:
@@ -390,6 +427,40 @@ def insights(current: dict, previous: dict, trend: list[dict], flow: list[dict],
     return notes
 
 
+def goals_for(conn: sqlite3.Connection, ym: str) -> dict:
+    """Obiectivul lunii: cel setat pentru luna respectivă sau cel general („în fiecare lună”)."""
+    rows = {row["month"]: row for row in conn.execute(
+        "SELECT * FROM goals WHERE month IN (?, 'default')", (ym,))}
+    specific, general = rows.get(ym), rows.get("default")
+    result = {}
+    for key in ("revenue", "profit"):
+        value = specific[key] if specific and specific[key] is not None else (general[key] if general else None)
+        result[key] = value
+    result["specific"] = specific is not None
+    return result
+
+
+def goal_progress(conn: sqlite3.Connection, current: dict, until_day: int | None) -> dict | None:
+    """Cât s-a atins din obiectiv și unde se ajunge la final de lună, în ritmul de până acum."""
+    targets = goals_for(conn, current["month"])
+    if targets["revenue"] is None and targets["profit"] is None:
+        return None
+    days = calendar.monthrange(int(current["month"][:4]), int(current["month"][5:]))[1]
+    pace = days / until_day if until_day else 1
+    result = {"specific": targets["specific"], "days_in_month": days, "day": until_day or days}
+    for key in ("revenue", "profit"):
+        target = targets[key]
+        if target is None:
+            continue
+        actual = current[key]
+        projected = r2(actual * pace)
+        result[key] = {"target": target, "actual": actual, "projected": projected,
+                       "pct": r2(actual / target * 100) if target else 0.0,
+                       "projected_pct": r2(projected / target * 100) if target else 0.0,
+                       "daily_needed": r2(max(target - actual, 0) / max(days - until_day, 1)) if until_day else 0.0}
+    return result
+
+
 def first_data_month(conn: sqlite3.Connection) -> str | None:
     row = conn.execute(
         "SELECT MIN(d) FROM (SELECT MIN(date) AS d FROM sales UNION ALL "
@@ -469,6 +540,7 @@ def dashboard(conn: sqlite3.Connection, ym: str) -> dict:
         "top_products": top_products,
         "top_clients": top_clients,
         "low_stock": low_stock,
+        "goals": goal_progress(conn, current, until_day),
         "receivables": receivables(conn),
         "payables": payables(conn),
         "insights": insights(current, previous, trend, flow, until_day),

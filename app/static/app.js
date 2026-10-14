@@ -83,6 +83,12 @@ const ICONS = {
   raise: '<path d="M12 20V10M18 20V4M6 20v-4"/>',
   truck: '<path d="M1 3h15v13H1zM16 8h4l3 3v5h-7z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/>',
   users: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 016-6h4a6 6 0 016 6v1"/><path d="M19 4.5a3 3 0 010 5.5M5 4.5a3 3 0 000 5.5"/>',
+  undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-15-6.7L3 13"/>',
+  bank: '<path d="M3 10l9-6 9 6M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 21h18"/>',
+  lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>',
+  history: '<path d="M3 3v5h5"/><path d="M3.1 13a9 9 0 102.1-6.6L3 8"/><path d="M12 7v5l3 2"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
+  target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
   refresh: '<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0114.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0020.5 15"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
@@ -100,7 +106,7 @@ const state = {
 
 async function api(path, options = {}) {
   const opts = { credentials: "same-origin", headers: {}, ...options };
-  if (opts.body && typeof opts.body !== "string") {
+  if (opts.body && typeof opts.body !== "string" && !(opts.body instanceof FormData)) {
     opts.body = JSON.stringify(opts.body);
     opts.headers["Content-Type"] = "application/json";
   }
@@ -293,8 +299,10 @@ const ROUTES = {
   clienti: { label: "Clienți", icon: "users", eyebrow: "Cine vă datorează bani", title: "Clienți și încasări", render: renderClients },
   furnizori: { label: "Furnizori", icon: "truck", eyebrow: "Cui datorați bani", title: "Furnizori și plăți", render: renderSuppliers },
   cheltuieli: { label: "Cheltuieli", icon: "expenses", eyebrow: "Bani care ies", title: "Cheltuieli", render: renderExpenses },
+  bani: { label: "Trezorerie", icon: "bank", eyebrow: "Bani în cont", title: "Trezorerie și prognoză", render: renderTreasury, noMonth: true },
   angajati: { label: "Angajați", icon: "team", eyebrow: "Echipa și salariile", title: "Angajați", render: renderEmployees },
   taxe: { label: "Taxe", icon: "taxes", eyebrow: "Ce plătiți statului", title: "Taxe și contribuții", render: renderTaxes },
+  calendar: { label: "Calendar fiscal", icon: "calendar", eyebrow: "Termene ANAF", title: "Calendar fiscal", render: renderCalendar, noMonth: true },
   rapoarte: { label: "Rapoarte", icon: "reports", eyebrow: "Pentru contabilă", title: "Rapoarte și export", render: renderReports },
   setari: { label: "Setări", icon: "settings", eyebrow: "Configurare", title: "Setări", render: renderSettings, noMonth: true },
 };
@@ -382,7 +390,7 @@ function confirmBox(title, text, confirmLabel = "Șterge") {
       <p class="muted">${esc(text)}</p>
       <div class="form-actions">
         <button class="btn btn-ghost" type="button" data-no>Renunță</button>
-        <button class="btn btn-danger" type="button" data-yes>${icon("trash")}${esc(confirmLabel)}</button>
+        <button class="btn btn-danger" type="button" data-yes>${icon(/^șterge/i.test(confirmLabel) ? "trash" : "check")}${esc(confirmLabel)}</button>
       </div>`, (body) => {
       $("[data-no]", body).onclick = () => { closeModal(); resolve(false); };
       $("[data-yes]", body).onclick = () => { closeModal(); resolve(true); };
@@ -497,7 +505,7 @@ async function renderDashboard(view) {
       <h2>${greeting()}${d.owner_name ? `, ${esc(d.owner_name)}` : ""}! Iată cum arată <span>${esc(d.company)}</span> în ${esc(c.label)}.</h2>
       ${d.in_progress
         ? `<span class="badge"><span class="dot"></span>Lună în curs — date până azi</span>`
-        : `<span class="chip up">${icon("check")}Lună încheiată</span>`}
+        : `<span class="chip up">${icon(d.closed ? "lock" : "check")}${d.closed ? "Lună închisă" : "Lună încheiată"}</span>`}
     </div>
 
     <section class="grid kpis">
@@ -515,6 +523,8 @@ async function renderDashboard(view) {
         </article>`).join("")}
     </section>
 
+    ${d.reminders?.length ? `<a class="reminder glass mt" href="#calendar">${robotSVG("mini")}<span><b>Testi îți amintește:</b> ${d.reminders.map((r) => `${esc(r.form)} — ${lei(r.amount)} până ${r.days_left === 0 ? "azi" : `pe ${formatDate(r.date).slice(0, 5)}`}`).join(" · ")}</span><span class="btn btn-sm">Vezi calendarul</span></a>` : ""}
+
     <section class="mini-kpis mt">
       ${minis.map((m) => `
         <a class="mini glass ${m.tone}" href="${m.href}">
@@ -522,6 +532,8 @@ async function renderDashboard(view) {
           <span class="mini-body"><span>${esc(m.label)}</span><strong>${m.value}</strong><small>${esc(m.note)}</small></span>
         </a>`).join("")}
     </section>
+
+    ${goalsCard(d)}
 
     <section class="grid cols-2 mt">
       <article class="card glass fill">
@@ -598,6 +610,7 @@ async function renderDashboard(view) {
 
   $$("[data-count]", view).forEach((el) => countUp(el, Number(el.dataset.count)));
   animateBars(view);
+  $("#goal-btn", view)?.addEventListener("click", () => openGoals(d.goals));
 
   makeChart($("#trend-chart"), {
     data: {
@@ -629,6 +642,206 @@ async function renderDashboard(view) {
       cutout: "72%", responsive: true, maintainAspectRatio: false, animation: { animateRotate: true, duration: 1300 },
       plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ` ${ctx.label}: ${lei(ctx.parsed)}` } } },
     },
+  });
+}
+
+function goalsCard(d) {
+  const g = d.goals;
+  if (!g) return `<section class="goal-cta glass mt"><span class="ic">${icon("target")}</span><span><b>Setați un obiectiv lunar</b> de vânzări și profit. Testi vă spune zilnic dacă îl atingeți.</span>
+    <button class="btn btn-sm btn-gold" id="goal-btn" type="button">${icon("target")}Setează obiectiv</button></section>`;
+  const row = (label, x, color) => {
+    if (!x) return "";
+    const ok = x.projected >= x.target;
+    return `<div class="goal-row"><header><span>${label}</span><span><b>${lei(x.actual)}</b> din ${lei(x.target)} · <b style="color:${x.pct >= 100 ? "var(--green)" : "var(--text)"}">${pct(x.pct)}</b></span></header>
+      <div class="bar goal-bar"><i data-w="${Math.min(Math.max(x.pct, 0), 100)}%" style="background:${color}"></i>${d.in_progress ? `<em style="left:${Math.min(Math.max(x.projected_pct, 0), 100)}%" title="Estimare la final de lună"></em>` : ""}</div>
+      <small class="${ok ? "pos" : "neg"}">${d.in_progress ? (ok ? `În ritmul actual ajungeți la ${lei(x.projected)} — obiectiv atins.` : `În ritmul actual: ${lei(x.projected)}. Mai trebuie ~${lei(x.daily_needed)} pe zi.`) : (x.pct >= 100 ? "Obiectiv atins." : `Au lipsit ${lei(x.target - x.actual)}.`)}</small></div>`;
+  };
+  return `<section class="card glass mt goals">
+    <div class="card-head"><div><h2>${icon("target")} Obiectivele lunii</h2><p>${d.in_progress ? `Ziua ${g.day} din ${g.days_in_month} · linia subțire arată estimarea la final de lună` : "Rezultatul final al lunii"}${g.specific ? "" : " · obiectiv general, pentru fiecare lună"}</p></div>
+      <button class="btn btn-sm" id="goal-btn" type="button">${icon("edit")}Modifică</button></div>
+    <div class="grid cols-2-even">${row("Vânzări (fără TVA)", g.revenue, "linear-gradient(90deg,#3b82f6,#22d3ee)")}${row("Profit net", g.profit, "linear-gradient(90deg,#34d399,#fbbf24)")}</div>
+  </section>`;
+}
+
+async function openGoals() {
+  const g = await api(`/api/goals?month=${state.month}`);
+  const value = (o, k) => (o && o[k] != null ? o[k] : "");
+  openModal("Obiective lunare", `<form id="goal-form">
+    <p class="muted" style="margin-top:0">Obiectivul general se aplică în fiecare lună. Pentru o lună anume (de exemplu decembrie, cu sărbători) puteți pune altul. Lăsați gol ca să ștergeți.</p>
+    <h3 style="font-size:14px;margin:10px 0">În fiecare lună</h3>
+    <div class="form-grid">
+      <label class="field"><span>Vânzări (lei, fără TVA)</span><input type="number" name="d_revenue" min="1" step="1" value="${value(g.default, "revenue")}"></label>
+      <label class="field"><span>Profit net (lei)</span><input type="number" name="d_profit" step="1" value="${value(g.default, "profit")}"></label>
+    </div>
+    <h3 style="font-size:14px;margin:16px 0 10px">Doar pentru ${esc(monthLabel(state.month))}</h3>
+    <div class="form-grid">
+      <label class="field"><span>Vânzări (lei, fără TVA)</span><input type="number" name="m_revenue" min="1" step="1" value="${value(g.month, "revenue")}"></label>
+      <label class="field"><span>Profit net (lei)</span><input type="number" name="m_profit" step="1" value="${value(g.month, "profit")}"></label>
+    </div>
+    <div class="form-actions"><button class="btn btn-ghost" type="button" onclick="closeModal()">Renunță</button>
+      <button class="btn btn-gold" type="submit">${icon("check")}Salvează</button></div></form>`, (body) => {
+    $("#goal-form", body).addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const d = formData(ev.target);
+      const num = (v) => (v === "" || v == null ? null : Number(v));
+      try {
+        await api("/api/goals", { method: "PUT", body: { month: "default", revenue: num(d.d_revenue), profit: num(d.d_profit) } });
+        await api("/api/goals", { method: "PUT", body: { month: state.month, revenue: num(d.m_revenue), profit: num(d.m_profit) } });
+        closeModal(); toast("Obiectivele au fost salvate."); render();
+      } catch (err) { toast(err.message, "err"); }
+    });
+  });
+}
+
+/* ================= Trezorerie ================= */
+
+async function renderTreasury(view) {
+  let includeOverdue = false;
+  try { includeOverdue = localStorage.getItem("testify-overdue") === "1"; } catch { /* stocare indisponibilă */ }
+  const t = await api(`/api/treasury?include_overdue=${includeOverdue}`);
+  const tone = t.goes_negative ? "bad" : t.lowest.balance < t.monthly_expenses ? "warn" : "good";
+  view.innerHTML = `
+    <section class="card glass balance-card">
+      <div class="card-head"><div><h2>${icon("bank")} Câți bani aveți acum?</h2>
+        <p>Introduceți soldul din bancă plus casa (numerarul). Aplicația nu vede contul bancar, așa că actualizați-l din când în când, ideal săptămânal.</p></div></div>
+      <form id="balance-form" class="balance-form">
+        <label class="field"><span>Sold bancă + casă azi (lei)</span><input type="number" name="balance" step="0.01" required value="${t.balance_set ? t.start_balance : ""}" placeholder="ex. 85000"></label>
+        <button class="btn btn-primary" type="submit">${icon("check")}Actualizează</button>
+        ${t.balance_date ? `<small class="${t.balance_stale ? "neg" : "muted"}">Ultima actualizare: ${formatDate(t.balance_date)}${t.balance_stale ? " — e mai veche de o săptămână" : ""}</small>` : ""}
+      </form>
+    </section>
+    ${t.balance_set ? "" : `<div class="insight warn mt"><span class="ic">${icon("alert")}</span><span>Fără sold, prognoza pornește de la 0 lei și arată doar ce intră și ce iese.</span></div>`}
+
+    <section class="grid kpis mt">
+      <article class="card glass kpi" style="--accent:#22d3ee"><div class="kpi-top"><span class="kpi-label"><span class="kpi-icon">${icon("bank")}</span>Sold azi</span></div>
+        <div class="kpi-value">${lei(t.start_balance)}</div><div class="kpi-foot"><span class="sub">bancă + casă</span></div></article>
+      <article class="card glass kpi" style="--accent:#34d399"><div class="kpi-top"><span class="kpi-label"><span class="kpi-icon">${icon("down")}</span>Intră în 30 de zile</span></div>
+        <div class="kpi-value">${lei(t.total_in)}</div><div class="kpi-foot"><span class="sub">încasări clienți + vânzări pe loc</span></div></article>
+      <article class="card glass kpi" style="--accent:#f87171"><div class="kpi-top"><span class="kpi-label"><span class="kpi-icon">${icon("up")}</span>Iese în 30 de zile</span></div>
+        <div class="kpi-value">${lei(t.total_out)}</div><div class="kpi-foot"><span class="sub">furnizori, cheltuieli, salarii, taxe</span></div></article>
+      <article class="card glass kpi" style="--accent:${t.goes_negative ? "#f87171" : "#fbbf24"}"><div class="kpi-top"><span class="kpi-label"><span class="kpi-icon">${icon("alert")}</span>Cel mai mic sold</span></div>
+        <div class="kpi-value" style="color:${t.goes_negative ? "var(--red)" : "inherit"}">${lei(t.lowest.balance)}</div><div class="kpi-foot"><span class="sub">pe ${formatDate(t.lowest.date)}</span></div></article>
+    </section>
+
+    <div class="insight ${tone} mt"><span class="ic">${icon(tone === "good" ? "check" : "alert")}</span><span>${t.goes_negative
+      ? `Atenție: pe <b>${formatDate(t.lowest.date)}</b> contul ar ajunge pe minus (<b>${lei(t.lowest.balance)}</b>). Grăbiți încasările restante (${lei(t.overdue_receivables)}) sau amânați o plată.`
+      : tone === "warn" ? `Soldul scade până la <b>${lei(t.lowest.balance)}</b> pe ${formatDate(t.lowest.date)}, mai puțin decât cheltuielile obișnuite ale unei luni (${lei(t.monthly_expenses)}). Fiți atent la plăți mari.`
+      : `Banii ajung pentru toate plățile din următoarele 30 de zile. Peste 30 de zile veți avea aproximativ <b>${lei(t.end_balance)}</b>.`}</span></div>
+
+    <section class="card glass mt">
+      <div class="card-head"><div><h2>Soldul zi de zi</h2><p>Următoarele 30 de zile, cu TVA inclus (exact cum se mișcă banii în cont)</p></div>
+        <label class="check"><input type="checkbox" id="include-overdue" ${t.include_overdue ? "checked" : ""}><span>Socotește și restanțele clienților (${lei(t.overdue_receivables)}) ca încasate în 7 zile</span></label></div>
+      <div class="chart-box"><canvas id="cash-chart"></canvas></div>
+    </section>
+
+    <section class="grid cols-2-even mt" style="align-items:start">
+      <article class="card glass">
+        <div class="card-head"><div><h2>Ce intră și ce iese</h2><p>Plățile și încasările cu dată sigură</p></div></div>
+        ${t.events.length ? `<div class="table-wrap events-list"><table class="compact"><tbody>${t.events.map((e) => `<tr><td style="white-space:nowrap">${formatDate(e.date).slice(0, 5)}</td>
+          <td>${esc(e.label)}</td><td class="r" style="color:${e.amount > 0 ? "var(--green)" : "var(--red)"};font-weight:700;white-space:nowrap">${e.amount > 0 ? "+" : "−"}${lei(Math.abs(e.amount))}</td></tr>`).join("")}</tbody></table></div>`
+          : emptyState("Nicio plată sau încasare programată.")}
+      </article>
+      <article class="card glass">
+        <div class="card-head"><div><h2>Cum se calculează</h2><p>Estimări din datele de până acum</p></div></div>
+        <ul class="insights">
+          <li class="insight info"><span class="ic">${icon("wallet")}</span><span>Facturile neîncasate intră la scadență (cu TVA).</span></li>
+          <li class="insight info"><span class="ic">${icon("sales")}</span><span>Vânzări plătite pe loc: cam <b>${lei(t.daily_cash_sales)}</b> pe zi (media ultimelor 90 de zile).</span></li>
+          <li class="insight info"><span class="ic">${icon("expenses")}</span><span>Cheltuieli obișnuite: cam <b>${lei(t.monthly_expenses)}</b> pe lună (media ultimelor 3 luni), împărțite pe zile.</span></li>
+          <li class="insight info"><span class="ic">${icon("truck")}</span><span>Marfa de la furnizori se plătește la scadență; restanțele, imediat.</span></li>
+          <li class="insight info"><span class="ic">${icon("calendar")}</span><span>Salariile, taxele pe salarii, TVA și impozitul pe profit, la termenele din Calendarul fiscal.</span></li>
+        </ul>
+      </article>
+    </section>`;
+
+  $("#balance-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try { await api("/api/treasury/balance", { method: "PUT", body: { balance: Number(formData(e.target).balance) } }); toast("Soldul a fost actualizat."); render(); }
+    catch (err) { toast(err.message, "err"); }
+  });
+  $("#include-overdue").addEventListener("change", (e) => {
+    try { localStorage.setItem("testify-overdue", e.target.checked ? "1" : "0"); } catch { /* stocare indisponibilă */ }
+    render();
+  });
+  makeChart($("#cash-chart"), {
+    type: "line",
+    data: {
+      labels: t.days.map((x) => formatDate(x.date).slice(0, 5)),
+      datasets: [{ label: "Sold estimat", data: t.days.map((x) => x.balance), borderColor: "#22d3ee", borderWidth: 3, tension: 0.3, pointRadius: 0, pointHoverRadius: 6,
+        fill: { target: { value: 0 }, above: "rgba(34,211,238,0.12)", below: "rgba(248,113,113,0.25)" } }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => ` Sold: ${lei(ctx.parsed.y)}`,
+        afterLabel: (ctx) => { const day = t.days[ctx.dataIndex]; return ` +${lei(day.in)} / −${lei(day.out)}`; } } } },
+      scales: { x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } }, y: { ticks: { callback: moneyTick } } },
+    },
+  });
+}
+
+/* ================= Calendar fiscal ================= */
+
+const OBLIGATION_STATUS = { soon: "în curând", upcoming: "urmează", past: "termen trecut", paid: "plătit" };
+
+async function renderCalendar(view) {
+  const year = Number(state.month.slice(0, 4));
+  const d = await api(`/api/obligations?year=${year}`);
+  const items = d.items;
+  const upcoming = items.filter((i) => ["soon", "upcoming"].includes(i.status));
+  const next = upcoming.find((i) => i.kind === "anaf" && i.amount > 0);
+  const nextDate = next?.date;
+  const nextTotal = items.filter((i) => i.date === nextDate && i.kind !== "info" && !i.paid && i.amount > 0).reduce((s, i) => s + i.amount, 0);
+  const pt = d.profit_tax;
+  const groups = {};
+  items.forEach((i) => (groups[i.date] ||= []).push(i));
+
+  view.innerHTML = `
+    ${next ? `<section class="card glass next-deadline">
+      <div class="nd-date"><span>${formatDate(nextDate).slice(0, 5)}</span><small>${next.days_left === 0 ? "azi" : `în ${next.days_left} zile`}</small></div>
+      <div><h2>Următorul termen la ANAF</h2><p>De plătit în total: <b class="num" style="font-size:22px;color:var(--gold)">${lei(nextTotal)}</b></p>
+        <p class="muted" style="margin:4px 0 0">Termenele care pică în weekend sau de sărbători sunt mutate automat în prima zi lucrătoare.</p></div>
+    </section>` : ""}
+
+    <section class="grid cols-2 mt" style="align-items:start">
+      <article class="card glass">
+        <div class="card-head"><div><h2>Termene și sume</h2><p>Sumele lunii în curs sunt estimări și se actualizează pe măsură ce introduceți date. Bifați „Am plătit” ca Testi să nu vă mai amintească.</p></div></div>
+        <div class="deadlines">${Object.entries(groups).map(([date, list]) => `
+          <div class="dl-day ${list.every((i) => ["past", "paid"].includes(i.status)) ? "done" : ""}">
+            <div class="dl-date"><b>${formatDate(date).slice(0, 5)}</b><small>${new Date(date + "T12:00").toLocaleDateString("ro-RO", { weekday: "short" })}</small></div>
+            <ul>${list.map((i) => `<li class="dl-item ${i.status}">
+              <span class="tag form-tag">${esc(i.form)}</span>
+              <span class="dl-title">${esc(i.title)}${i.estimate ? ' <span class="tag">estimat</span>' : ""}${i.details ? `<small>${esc(i.details)}</small>` : ""}</span>
+              <span class="dl-amount">${i.amount == null ? "" : `<b class="${i.amount < 0 ? "pos" : ""}">${i.amount < 0 ? "+" : ""}${lei(Math.abs(i.amount))}</b>`}</span>
+              ${i.kind !== "info" && i.amount > 0 && i.status !== "past" ? `<button class="tag ${i.paid ? "paid" : "unpaid"}" data-ob="${esc(i.id)}" data-value="${i.paid ? 0 : 1}">${i.paid ? `${icon("check")}Plătit` : "Am plătit"}</button>` : `<span class="tag muted-tag">${OBLIGATION_STATUS[i.status]}</span>`}
+            </li>`).join("")}</ul>
+          </div>`).join("")}</div>
+      </article>
+
+      <article class="card glass">
+        <div class="card-head"><div><h2>Impozit pe profit ${year}</h2><p>Se plătește trimestrial, din profitul cumulat de la începutul anului. Pierderile se recuperează din cel mult ${pct(pt.loss_limit_pct)} din profit.</p></div></div>
+        ${d.regime === "micro" ? `<p class="muted">Firma este setată ca microîntreprindere: impozitul se plătește din venituri, vezi termenele din stânga.</p>` : `
+        <div class="table-wrap"><table class="compact">
+          <thead><tr><th>Trim.</th><th class="r">Profit</th><th class="r">Cumulat</th><th class="r" title="Pierdere fiscală recuperată">Pierdere</th><th class="r">De plată</th></tr></thead>
+          <tbody>${pt.quarters.map((q) => `<tr><td><b>T${q.quarter}</b><br><small class="muted">până ${formatDate(q.deadline).slice(0, 5)}${q.quarter === 4 ? ` ${q.deadline.slice(0, 4)}` : ""}</small></td>
+            <td class="r" style="color:${q.profit_before_tax < 0 ? "var(--red)" : "inherit"}">${lei(q.profit_before_tax)}</td><td class="r">${lei(q.cumulative_pbt)}</td>
+            <td class="r">${q.loss_recovered ? lei(q.loss_recovered) : "—"}</td>
+            <td class="r"><b style="color:var(--gold)">${lei(q.tax_due)}</b>${q.estimate ? '<br><small class="muted">estimat</small>' : ""}</td></tr>`).join("")}</tbody>
+          <tfoot><tr><td colspan="4">Total ${year}</td><td class="r">${lei(pt.total)}</td></tr></tfoot>
+        </table></div>
+        <ul class="insights mt">
+          <li class="insight info"><span class="ic">${icon("percent")}</span><span>Pierdere fiscală de recuperat la începutul lui ${year}: <b>${lei(pt.loss_at_start)}</b>. Pierderile din anii dinaintea aplicației se trec în Setări.</span></li>
+          <li class="insight info"><span class="ic">${icon("alert")}</span><span>Lunar, rapoartele arată impozitul ca la contabil (16% din profitul lunii). Aici e suma care se plătește efectiv: o lună pe pierdere scade impozitul trimestrului.</span></li>
+        </ul>`}
+      </article>
+    </section>`;
+
+  view.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-ob]");
+    if (!btn) return;
+    try {
+      await api(`/api/obligations/${btn.dataset.ob}/paid`, { method: "PATCH", body: { paid: btn.dataset.value === "1" } });
+      toast(btn.dataset.value === "1" ? "Notat ca plătit. Testi nu vă mai amintește de el." : "Bifa a fost scoasă.");
+      render();
+    } catch (err) { toast(err.message, "err"); }
   });
 }
 
@@ -708,6 +921,7 @@ function saleFormHTML(sale = {}, mode = "order") {
         <label class="field" style="grid-column:1/-1"><span>Produs</span><select name="product_id" required>${productOptions(sale.product_id)}</select></label>
         <label class="field"><span>Cantitate</span><input type="number" name="quantity" min="1" step="1" required value="${esc(sale.quantity || 1)}"></label>
         <label class="field"><span>Preț / buc. fără TVA</span><input type="number" name="unit_price" min="0.01" step="0.01" placeholder="din fișa produsului" value="${esc(sale.unit_price ?? "")}"></label>
+        <label class="field"><span>Reducere (%)</span><input type="number" name="discount" min="0" max="99" step="0.5" placeholder="0" value="${esc(sale.discount || "")}"></label>
         <div class="sale-calc" style="grid-column:1/-1"></div>
       ` : `
         <label class="field" style="grid-column:span 2"><span>Descriere</span><input name="description" required maxlength="200" placeholder="ex. Vânzări magazin — total zi" value="${esc(sale.description || "")}"></label>
@@ -722,21 +936,23 @@ function wireSaleForm(form) {
   const select = $("[name=product_id]", form);
   if (!select) return;
   const qty = $("[name=quantity]", form), price = $("[name=unit_price]", form), out = $(".sale-calc", form);
+  const discount = $("[name=discount]", form);
   const update = (fromProduct) => {
     const p = state.products.find((x) => x.id === Number(select.value));
     if (!p) { out.innerHTML = ""; return; }
     if (fromProduct || !price.value) price.value = p.sale_price ? p.sale_price.toFixed(2) : "";
-    const q = Number(qty.value) || 0, u = Number(price.value) || 0;
-    const total = q * u, profit = total - q * p.cost;
+    const q = Number(qty.value) || 0, u = Number(price.value) || 0, d = Math.min(Number(discount.value) || 0, 99);
+    const total = q * u * (1 - d / 100), profit = total - q * p.cost;
     const after = p.stock - q;
     out.innerHTML = `
-      <span>Total: <b>${lei(total, true)}</b></span>
+      <span>Total: <b>${lei(total, true)}</b>${d ? ` <small class="muted">(reducere ${pct(d)}: −${lei(q * u - total, true)})</small>` : ""}</span>
       <span>Profit din vânzare: <b style="color:${profit >= 0 ? "var(--green)" : "var(--red)"}">${lei(profit, true)}</b></span>
       <span class="${after < 0 ? "neg" : after <= p.min_stock ? "warn" : ""}">Stoc după vânzare: <b>${after} buc.</b>${after < 0 ? " — stoc insuficient!" : after <= p.min_stock ? " — sub minim" : ""}</span>`;
   };
   select.addEventListener("change", () => update(true));
   qty.addEventListener("input", () => update(false));
   price.addEventListener("input", () => update(false));
+  discount.addEventListener("input", () => update(false));
   update(false);
 }
 
@@ -747,6 +963,7 @@ function salePayload(form, mode) {
     payload.product_id = Number(d.product_id);
     payload.quantity = Number(d.quantity) || 1;
     if (d.unit_price) payload.unit_price = Number(d.unit_price);
+    payload.discount = Number(d.discount) || 0;
   } else {
     payload.description = d.description;
     payload.amount = Number(d.amount);
@@ -756,6 +973,7 @@ function salePayload(form, mode) {
 }
 
 function paidChip(s) {
+  if (s.amount < 0) return `<span class="tag storno">Retur${s.storno_of_invoice ? ` la ${esc(s.storno_of_invoice)}` : ""}</span>`;
   if (s.paid) return `<button class="tag paid" data-paid="${s.id}" data-value="0" title="Marchează ca neîncasată">${icon("check")}Încasat</button>`;
   const late = s.due_date && s.due_date < todayISO();
   return `<button class="tag ${late ? "late" : "unpaid"}" data-paid="${s.id}" data-value="1" title="Marchează ca încasată">${late ? "Restantă" : "Neîncasat"} · ${formatDate(s.due_date).slice(0, 5)}</button>`;
@@ -808,12 +1026,13 @@ async function renderSales(view) {
             <td>${formatDate(s.date)}</td>
             <td class="mono">${esc(s.invoice_number || "—")}</td>
             <td>${esc(s.client_name || "—")}</td>
-            <td>${esc(s.product || s.description)}${s.product_id ? "" : ' <span class="tag total">Total</span>'}</td>
+            <td>${esc(s.amount < 0 ? s.description : s.product || s.description)}${s.product_id || s.amount < 0 ? "" : ' <span class="tag total">Total</span>'}${s.discount ? ` <span class="tag">−${pct(s.discount)}</span>` : ""}${s.returned_amount ? ` <span class="tag storno" title="Retur de ${lei(s.returned_amount, true)}">returnat ${s.returned_quantity ? `${s.returned_quantity} buc.` : lei(s.returned_amount)}</span>` : ""}</td>
             <td class="r">${s.quantity ?? "—"}</td>
-            <td class="r"><b>${lei(s.amount, true)}</b></td>
+            <td class="r"><b class="${s.amount < 0 ? "neg" : ""}">${lei(s.amount, true)}</b></td>
             <td>${paidChip(s)}</td>
             <td class="actions">
-              <button class="icon-btn" data-edit="${s.id}" title="Editează">${icon("edit")}</button>
+              ${s.amount > 0 && !(s.returned_amount >= s.amount - 0.001) ? `<button class="icon-btn" data-return="${s.id}" title="Retur / stornare">${icon("undo")}</button>` : ""}
+              ${s.amount > 0 && !s.returned_amount ? `<button class="icon-btn" data-edit="${s.id}" title="Editează">${icon("edit")}</button>` : ""}
               <button class="icon-btn danger" data-del="${s.id}" title="Șterge">${icon("trash")}</button>
             </td>
           </tr>`).join("")}</tbody>
@@ -844,6 +1063,8 @@ async function renderSales(view) {
 
   view.addEventListener("click", async (e) => {
     const edit = e.target.closest("[data-edit]"), del = e.target.closest("[data-del]"), paid = e.target.closest("[data-paid]");
+    const ret = e.target.closest("[data-return]");
+    if (ret) openReturn(sales.find((s) => s.id === Number(ret.dataset.return)));
     if (paid) {
       try {
         await api(`/api/sales/${paid.dataset.paid}/paid`, { method: "PATCH", body: { paid: paid.dataset.value === "1" } });
@@ -873,6 +1094,36 @@ async function renderSales(view) {
       try { await api(`/api/sales/${del.dataset.del}`, { method: "DELETE" }); toast("Vânzarea a fost ștearsă."); render(); }
       catch (err) { toast(err.message, "err"); }
     }
+  });
+}
+
+// Retur: factură de stornare (cu minus). Marfa revine în stoc, venitul și TVA scad.
+function openReturn(sale) {
+  const isProduct = !!sale.product_id;
+  const left = isProduct ? sale.quantity - (sale.returned_quantity || 0) : +(sale.amount - (sale.returned_amount || 0)).toFixed(2);
+  openModal(`Retur la factura ${esc(sale.invoice_number || "")}`, `<form id="return-form">
+    <p class="muted" style="margin-top:0">Se emite o factură de stornare (cu minus), legată de ${esc(sale.invoice_number || "factură")}.
+      ${isProduct ? "Marfa returnată revine în stoc." : ""} Venitul, TVA și profitul scad în luna returului.</p>
+    <div class="form-grid">
+      <label class="field"><span>Data returului</span><input type="date" name="date" required value="${todayISO()}" min="${esc(sale.date)}" max="${todayISO()}"></label>
+      ${isProduct
+        ? `<label class="field"><span>Bucăți returnate (din ${left})</span><input type="number" name="quantity" min="1" max="${left}" step="1" required value="${left}"></label>`
+        : `<label class="field"><span>Suma stornată, fără TVA (max. ${lei(left, true)})</span><input type="number" name="amount" min="0.01" max="${left}" step="0.01" required value="${left}"></label>`}
+      <label class="field" style="grid-column:1/-1"><span>Motiv (opțional)</span><input name="reason" maxlength="200" placeholder="ex. produs defect, comandă anulată"></label>
+    </div>
+    <div class="form-actions"><button class="btn btn-ghost" type="button" onclick="closeModal()">Renunță</button>
+      <button class="btn btn-primary" type="submit">${icon("undo")}Emite stornarea</button></div></form>`, (body) => {
+    $("#return-form", body).addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const d = formData(ev.target);
+      const payload = { date: d.date, reason: d.reason };
+      if (isProduct) payload.quantity = Number(d.quantity); else payload.amount = Number(d.amount);
+      try {
+        const result = await api(`/api/sales/${sale.id}/return`, { method: "POST", body: payload });
+        closeModal(); toast(`Stornarea ${result.invoice_number} a fost emisă (${lei(result.amount, true)}).`);
+        setMonthFromDate(payload.date); render();
+      } catch (err) { toast(err.message, "err"); }
+    });
   });
 }
 
@@ -1435,6 +1686,7 @@ async function renderEmployees(view) {
       <div class="stat"><span>Total net plătit</span><strong>${lei(t.net)}</strong></div>
       <div class="stat"><span>Cost total firmă</span><strong style="color:var(--gold)">${lei(t.employer_cost)}</strong></div>
     </section>
+    ${pay.warnings.length ? `<ul class="insights mt">${pay.warnings.map((w) => `<li class="insight bad"><span class="ic">${icon("alert")}</span><span>${esc(w)}</span></li>`).join("")}</ul>` : ""}
 
     <div class="card-head mt" style="margin-bottom:14px">
       <div><h2>Echipa</h2><p>Adăugați angajați și modificați salariile pe măsură ce evoluează.</p></div>
@@ -1447,30 +1699,35 @@ async function renderEmployees(view) {
           <div class="avatar" style="background:${gradientFor(e.name)}">${esc(initials(e.name))}</div>
           <div style="flex:1;min-width:0"><h3>${esc(e.name)}</h3><p>${esc(e.role || "—")}</p></div>
           ${e.active ? "" : '<span class="tag">Inactiv</span>'}
+          ${e.hours_per_day < 8 ? `<span class="tag">${e.hours_per_day} ore/zi</span>` : ""}
         </div>
+        ${e.below_min_wage && e.active ? `<p class="emp-warn">${icon("alert")}Sub salariul minim (${lei(e.min_wage)} pentru norma lui)</p>` : ""}
         <div class="emp-pay">
           <div><span>Brut</span><strong>${lei(e.salary.gross)}</strong></div>
           <div><span>Net</span><strong style="color:var(--cyan)">${lei(e.salary.net)}</strong></div>
           <div><span>Cost firmă</span><strong style="color:var(--gold)">${lei(e.salary.employer_cost)}</strong></div>
         </div>
         <ul class="timeline">${e.history.map((h) => `<li><b>${lei(h.gross)}</b> brut din ${formatDate(h.effective_from)} · ${esc(h.note)}</li>`).join("")}
-          <li>Angajat din <b>${formatDate(e.hire_date)}</b>${e.end_date ? ` · plecat ${formatDate(e.end_date)}` : ""}</li></ul>
+          <li>Angajat din <b>${formatDate(e.hire_date)}</b>${e.end_date ? ` · plecat ${formatDate(e.end_date)}` : ""}</li>
+          <li>Concediu de odihnă ${currentMonth().slice(0, 4)}: <b>${e.leave_taken}</b> din ${e.leave_days} zile luate · <b style="color:${e.leave_left < 0 ? "var(--red)" : "var(--green)"}">${e.leave_left} rămase</b></li></ul>
         <div class="emp-actions">
           <button class="btn btn-sm btn-gold" data-raise="${e.id}" type="button">${icon("raise")}Modifică salariul</button>
-          <button class="btn btn-sm" data-edit="${e.id}" type="button">${icon("edit")}Editează</button>
+          <button class="btn btn-sm" data-leave="${e.id}" type="button">${icon("calendar")}Concedii</button>
+          <button class="icon-btn" data-edit="${e.id}" title="Editează">${icon("edit")}</button>
           <button class="icon-btn danger" data-del="${e.id}" title="Șterge">${icon("trash")}</button>
         </div>
       </article>`).join("")}</section>` : `<div class="card glass">${emptyState("Nu aveți încă angajați. Adăugați primul angajat.")}</div>`}
 
     <section class="card glass mt">
-      <div class="card-head"><div><h2>Stat de plată — ${esc(monthLabel(state.month))}</h2><p>Calculat automat din salariile brute</p></div></div>
+      <div class="card-head"><div><h2>Stat de plată — ${esc(monthLabel(state.month))}</h2><p>Calculat automat din salariile brute · ${pay.working_days} zile lucrătoare${pay.min_wage ? ` · salariul minim ${lei(pay.min_wage)}` : ""}. Concediul fără plată scade brutul proporțional; deducerea personală și indemnizația de concediu medical le aplică contabilul.</p></div></div>
       ${pay.lines.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>Angajat</th><th class="r">Brut</th><th class="r">CAS</th><th class="r">CASS</th><th class="r">Impozit</th><th class="r">Net</th><th class="r">CAM</th><th class="r">Cost firmă</th></tr></thead>
+        <thead><tr><th>Angajat</th><th class="r">Zile</th><th class="r">Brut</th><th class="r">CAS</th><th class="r">CASS</th><th class="r">Impozit</th><th class="r">Net</th><th class="r">CAM</th><th class="r">Cost firmă</th></tr></thead>
         <tbody>${pay.lines.map((l) => `<tr><td>${esc(l.name)}<br><small class="muted">${esc(l.role)}</small></td>
-          <td class="r">${lei(l.gross, true)}</td><td class="r">${lei(l.cas, true)}</td><td class="r">${lei(l.cass, true)}</td>
+          <td class="r" title="${esc(absenceText(l.absences))}">${l.worked_days}/${l.working_days}${l.worked_days < l.working_days ? "<br><small class=\"muted\">" + esc(absenceText(l.absences)) + "</small>" : ""}</td>
+          <td class="r">${lei(l.gross, true)}${l.gross !== l.base_gross ? `<br><small class="muted">din ${lei(l.base_gross)}</small>` : ""}</td><td class="r">${lei(l.cas, true)}</td><td class="r">${lei(l.cass, true)}</td>
           <td class="r">${lei(l.income_tax, true)}</td><td class="r"><b style="color:var(--cyan)">${lei(l.net, true)}</b></td>
           <td class="r">${lei(l.cam, true)}</td><td class="r"><b>${lei(l.employer_cost, true)}</b></td></tr>`).join("")}</tbody>
-        <tfoot><tr><td>Total</td><td class="r">${lei(t.gross, true)}</td><td class="r">${lei(t.cas, true)}</td><td class="r">${lei(t.cass, true)}</td>
+        <tfoot><tr><td>Total</td><td></td><td class="r">${lei(t.gross, true)}</td><td class="r">${lei(t.cas, true)}</td><td class="r">${lei(t.cass, true)}</td>
           <td class="r">${lei(t.income_tax, true)}</td><td class="r">${lei(t.net, true)}</td><td class="r">${lei(t.cam, true)}</td><td class="r">${lei(t.employer_cost, true)}</td></tr></tfoot>
       </table></div>` : emptyState("Niciun angajat activ în această lună.")}
     </section>`;
@@ -1482,6 +1739,7 @@ async function renderEmployees(view) {
         <label class="field"><span>Funcție</span><input name="role" maxlength="120" placeholder="ex. Vânzări"></label>
         <label class="field"><span>Data angajării</span><input type="date" name="hire_date" required value="${todayISO()}"></label>
         <label class="field" style="grid-column:1/-1"><span>Salariu brut (lei)</span><input type="number" name="gross" min="1" step="1" required placeholder="ex. 5000"></label>
+        ${normFields({})}
       </div>
       <div class="preview hidden"></div>
       <div class="form-actions"><button class="btn btn-ghost" type="button" onclick="closeModal()">Renunță</button>
@@ -1491,7 +1749,7 @@ async function renderEmployees(view) {
         ev.preventDefault();
         const d = formData(ev.target);
         try {
-          await api("/api/employees", { method: "POST", body: { ...d, gross: Number(d.gross) } });
+          await api("/api/employees", { method: "POST", body: { ...d, gross: Number(d.gross), hours_per_day: Number(d.hours_per_day), leave_days: Number(d.leave_days) } });
           closeModal(); toast(`${d.name} a fost adăugat(ă) în echipă.`); render();
         } catch (err) { toast(err.message, "err"); }
       });
@@ -1501,6 +1759,8 @@ async function renderEmployees(view) {
   view.addEventListener("click", async (ev) => {
     const raise = ev.target.closest("[data-raise]"), edit = ev.target.closest("[data-edit]"), del = ev.target.closest("[data-del]");
     const find = (el, attr) => employees.find((x) => x.id === Number(el.dataset[attr]));
+    const leave = ev.target.closest("[data-leave]");
+    if (leave) openAbsences(find(leave, "leave"));
     if (raise) {
       const e = find(raise, "raise");
       const nextMonth = `${shiftMonth(currentMonth(), 1)}-01`;
@@ -1533,6 +1793,7 @@ async function renderEmployees(view) {
           <label class="field" style="grid-column:1/-1"><span>Funcție</span><input name="role" maxlength="120" value="${esc(e.role)}"></label>
           <label class="field"><span>Data angajării</span><input type="date" name="hire_date" required value="${esc(e.hire_date)}"></label>
           <label class="field"><span>Data plecării</span><input type="date" name="end_date" value="${esc(e.end_date || "")}"><small>Lăsați gol dacă lucrează în continuare.</small></label>
+          ${normFields(e)}
           <label class="field" style="grid-column:1/-1"><span>Notițe</span><textarea name="notes" rows="2" maxlength="500">${esc(e.notes)}</textarea></label>
         </div>
         <div class="form-actions"><button class="btn btn-ghost" type="button" onclick="closeModal()">Renunță</button>
@@ -1541,7 +1802,7 @@ async function renderEmployees(view) {
           sub.preventDefault();
           const d = formData(sub.target);
           try {
-            await api(`/api/employees/${e.id}`, { method: "PUT", body: { ...d, end_date: d.end_date || null } });
+            await api(`/api/employees/${e.id}`, { method: "PUT", body: { ...d, end_date: d.end_date || null, hours_per_day: Number(d.hours_per_day), leave_days: Number(d.leave_days) } });
             closeModal(); toast("Datele angajatului au fost salvate."); render();
           } catch (err) { toast(err.message, "err"); }
         });
@@ -1554,6 +1815,46 @@ async function renderEmployees(view) {
         catch (err) { toast(err.message, "err"); }
       }
     }
+  });
+}
+
+const ABSENCE_LABELS = { odihna: "Concediu de odihnă", medical: "Concediu medical", fara_plata: "Concediu fără plată" };
+const absenceText = (a) => Object.entries(a || {}).filter(([, v]) => v).map(([k, v]) => `${ABSENCE_LABELS[k]}: ${v} zile`).join(", ");
+
+function normFields(e) {
+  return `
+    <label class="field"><span>Normă</span><select name="hours_per_day">${[8, 6, 4, 2].map((h) =>
+      `<option value="${h}" ${(e.hours_per_day || 8) === h ? "selected" : ""}>${h === 8 ? "Normă întreagă (8 ore)" : `${h} ore pe zi`}</option>`).join("")}</select></label>
+    <label class="field"><span>Zile de concediu pe an</span><input type="number" name="leave_days" min="0" max="60" step="1" value="${e.leave_days ?? 21}"><small>Minimum legal: 20 de zile lucrătoare.</small></label>`;
+}
+
+function openAbsences(e) {
+  openModal(`Concedii — ${esc(e.name)}`, `
+    <p class="muted" style="margin-top:0">Concediul de odihnă și cel medical nu schimbă calculul aici (indemnizația medicală o calculează contabilul). Concediul fără plată scade salariul brut proporțional cu zilele lipsă.</p>
+    <form id="absence-form"><div class="form-grid">
+      <label class="field"><span>Luna</span><input type="month" name="month" required value="${state.month}"></label>
+      <label class="field"><span>Tip</span><select name="kind">${Object.entries(ABSENCE_LABELS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}</select></label>
+      <label class="field"><span>Zile lucrătoare</span><input type="number" name="days" min="1" max="23" step="1" required value="1"></label>
+      <label class="field"><span>Notă</span><input name="note" maxlength="200" placeholder="opțional"></label>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" type="submit">${icon("plus")}Adaugă</button></div></form>
+    <h3 style="margin:18px 0 8px;font-size:15px">Istoric</h3>
+    ${e.absences.length ? `<ul class="timeline">${e.absences.map((a) => `<li style="display:flex;justify-content:space-between;gap:8px"><span><b>${monthLabel(a.month)}</b> · ${ABSENCE_LABELS[a.kind]}: ${a.days} zile${a.note ? ` · ${esc(a.note)}` : ""}</span>
+      <button class="icon-btn danger" data-del-absence="${a.id}" title="Șterge">${icon("trash")}</button></li>`).join("")}</ul>` : '<p class="muted">Nicio absență înregistrată.</p>'}`, (body) => {
+    $("#absence-form", body).addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const d = formData(ev.target);
+      try {
+        await api(`/api/employees/${e.id}/absences`, { method: "POST", body: { ...d, days: Number(d.days) } });
+        closeModal(); toast("Absența a fost înregistrată."); render();
+      } catch (err) { toast(err.message, "err"); }
+    });
+    body.addEventListener("click", async (ev) => {
+      const del = ev.target.closest("[data-del-absence]");
+      if (!del) return;
+      try { await api(`/api/absences/${del.dataset.delAbsence}`, { method: "DELETE" }); closeModal(); toast("Absența a fost ștearsă."); render(); }
+      catch (err) { toast(err.message, "err"); }
+    });
   });
 }
 
@@ -1692,6 +1993,11 @@ async function renderReports(view) {
     </section>
 
     <section class="grid cols-2-even mt" style="align-items:start">
+      <article class="card glass" id="closing-card"><div class="skeleton" style="height:180px"></div></article>
+      <article class="card glass" id="audit-card"><div class="skeleton" style="height:180px"></div></article>
+    </section>
+
+    <section class="grid cols-2-even mt" style="align-items:start">
       <article class="card glass">
         <div class="card-head"><div><h2>Contul de profit și pierdere — ${esc(c.label)}</h2><p>Aceeași structură ca raportul contabilului</p></div></div>
         <div class="table-wrap"><table><tbody>
@@ -1726,6 +2032,53 @@ async function renderReports(view) {
   };
   $("#exp-excel").addEventListener("click", () => download("excel"));
   $("#exp-pdf").addEventListener("click", () => download("pdf"));
+  mountClosing($("#closing-card"));
+  mountAudit($("#audit-card"));
+}
+
+// Închiderea lunii: verificări, apoi blocarea modificărilor pe luna trimisă la contabil.
+async function mountClosing(card) {
+  const d = await api(`/api/closing?month=${state.month}`);
+  const closedInfo = d.closed.find((c) => c.month === state.month);
+  card.innerHTML = `
+    <div class="card-head"><div><h2>${icon("lock")} Închiderea lunii — ${esc(monthLabel(state.month))}</h2>
+      <p>După ce trimiteți raportul la contabil, închideți luna: nimeni nu mai poate modifica din greșeală facturile sau cheltuielile din ea.</p></div></div>
+    ${d.is_closed ? `
+      <div class="insight good"><span class="ic">${icon("lock")}</span><span>Luna este <b>închisă</b> din ${esc(closedInfo.closed_at.slice(0, 16).replace("T", " "))}.
+        Profit la închidere: <b>${lei(closedInfo.snapshot.profit)}</b>, TVA: <b>${lei(closedInfo.snapshot.vat_payable)}</b>.</span></div>
+      <div class="form-actions"><button class="btn btn-ghost" id="reopen-month" type="button">Redeschide luna</button></div>`
+    : d.can_close ? `
+      <ul class="checklist">${d.checklist.map((i) => `<li class="${i.ok ? "ok" : "warn"}">${icon(i.ok ? "check" : "alert")}<span>${esc(i.text)}</span></li>`).join("")}</ul>
+      <div class="form-actions"><button class="btn btn-primary" id="close-month" type="button">${icon("lock")}Închide ${esc(monthLabel(state.month))}</button></div>`
+    : `<p class="muted">Luna e încă în curs. Se poate închide după ce se termină.</p>`}
+    ${d.closed.length ? `<p class="muted" style="font-size:12.5px;margin-top:14px">Luni închise: ${d.closed.map((c) => esc(monthLabel(c.month))).join(", ")}</p>` : ""}`;
+  $("#close-month", card)?.addEventListener("click", async () => {
+    const warnings = d.checklist.filter((i) => !i.ok).length;
+    if (!await confirmBox(`Închideți ${monthLabel(state.month)}?`, `${warnings ? `Mai sunt ${warnings} verificări cu semne de întrebare. ` : ""}După închidere, documentele din lună nu se mai pot modifica (se poate redeschide oricând). Se face și o copie de siguranță.`, "Închide luna")) return;
+    try { await api(`/api/closing/${state.month}`, { method: "POST" }); toast("Luna a fost închisă. Am făcut și o copie de siguranță."); render(); }
+    catch (err) { toast(err.message, "err"); }
+  });
+  $("#reopen-month", card)?.addEventListener("click", async () => {
+    if (!await confirmBox("Redeschideți luna?", "Documentele vor putea fi modificate din nou. Dacă ați trimis deja raportul, anunțați contabilul despre corecturi.", "Redeschide")) return;
+    try { await api(`/api/closing/${state.month}`, { method: "DELETE" }); toast("Luna a fost redeschisă."); render(); }
+    catch (err) { toast(err.message, "err"); }
+  });
+}
+
+const AUDIT_ICONS = { insert: "plus", update: "edit", delete: "trash", event: "history" };
+
+async function mountAudit(card, limit = 12) {
+  const entries = await api(`/api/audit?limit=${limit}`);
+  card.innerHTML = `
+    <div class="card-head"><div><h2>${icon("history")} Jurnal de modificări</h2><p>Tot ce s-a adăugat, modificat sau șters, cu valorile vechi și noi.</p></div>
+      ${limit < 500 ? '<button class="btn btn-sm" id="audit-all" type="button">Tot jurnalul</button>' : ""}</div>
+    ${entries.length ? `<ul class="audit">${entries.map((e) => `
+      <li class="audit-${e.action}"><span class="ic">${icon(AUDIT_ICONS[e.action] || "history")}</span>
+        <div><b>${esc(e.text)}</b>${e.details.length ? `<small>${e.details.map(esc).join(" · ")}</small>` : ""}</div>
+        <time>${esc(formatDate(e.at.slice(0, 10)))} ${esc(e.at.slice(11, 16))}</time></li>`).join("")}</ul>` : emptyState("Nicio modificare încă.")}`;
+  $("#audit-all", card)?.addEventListener("click", () => {
+    openModal("Jurnal de modificări", '<div id="audit-full" class="audit-modal"></div>', (body) => mountAudit($("#audit-full", body), 500));
+  });
 }
 
 /* ================= Setări ================= */
@@ -1751,6 +2104,8 @@ async function renderSettings(view) {
                 <option value="micro" ${s.tax_regime === "micro" ? "selected" : ""}>Microîntreprindere (% din venituri)</option>
               </select></label>
               <label class="check" style="grid-column:1/-1"><input type="checkbox" name="vat_payer" ${s.vat_payer === "1" ? "checked" : ""}><span>Firma este plătitoare de TVA (calculează TVA colectată, deductibilă și de plată)</span></label>
+              <label class="field"><span>Ziua de plată a salariilor</span><input type="number" name="payday" min="1" max="28" step="1" value="${esc(s.payday || 10)}"><small>Pentru calendar și prognoza de bani.</small></label>
+              <label class="field"><span>Pierdere fiscală de recuperat (lei)</span><input type="number" name="tax_loss_carried" min="0" step="1" value="${esc(s.tax_loss_carried || 0)}"><small>Din anii dinaintea datelor din aplicație (o aflați de la contabil).</small></label>
             </div>
             <div class="form-actions"><button class="btn btn-primary" type="submit">${icon("check")}Salvează</button></div>
           </form>
@@ -1834,6 +2189,7 @@ async function renderSettings(view) {
             <div id="import-result"></div>
           </form>
         </article>
+        <article class="card glass" id="backup-card"><div class="skeleton" style="height:160px"></div></article>
         <article class="card glass" style="border-color:rgba(248,113,113,.3)">
           <div class="card-head"><div><h2>Datele firmei T3 2026</h2><p>Înlocuiește TOATE datele cu fișierele primite de la firmă (raportul contabil iulie–septembrie 2026).</p></div></div>
           <button class="btn btn-danger" id="demo-btn" type="button">${icon("alert")}Reîncarcă datele firmei</button>
@@ -1844,7 +2200,8 @@ async function renderSettings(view) {
   $("#settings-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const d = formData(e.target);
-    const body = { company_name: d.company_name, owner_name: d.owner_name, tax_regime: d.tax_regime, vat_payer: $("[name=vat_payer]", e.target).checked };
+    const body = { company_name: d.company_name, owner_name: d.owner_name, tax_regime: d.tax_regime, vat_payer: $("[name=vat_payer]", e.target).checked,
+      payday: Number(d.payday) || 10, tax_loss_carried: Number(d.tax_loss_carried) || 0 };
     try {
       await api("/api/settings", { method: "PUT", body });
       $("#brand-name").textContent = body.company_name;
@@ -1909,6 +2266,48 @@ async function renderSettings(view) {
       try { await api("/api/demo", { method: "POST" }); toast("Datele firmei au fost încărcate."); state.month = "2026-09"; location.hash = "#dashboard"; render(); }
       catch (err) { toast(err.message, "err"); }
     }
+  });
+  mountBackups($("#backup-card"));
+}
+
+const fileSize = (bytes) => bytes > 1048576 ? `${(bytes / 1048576).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+
+// Copii de siguranță: zilnic automat; restaurare dintr-o copie sau din exportul complet.
+async function mountBackups(card) {
+  const d = await api("/api/backups");
+  const label = (name) => name.includes("inainte-de") ? "înainte de restaurare / demo" : name.includes("inchidere") ? "la închiderea lunii" : name.includes("manual") ? "manuală" : "automată";
+  card.innerHTML = `
+    <div class="card-head"><div><h2>${icon("shield")} Copii de siguranță</h2>
+      <p>Aplicația face singură o copie în fiecare zi și păstrează ultimele ${d.keep}. Pentru siguranță deplină, descărcați lunar exportul complet pe un stick sau în cloud.</p></div></div>
+    <div class="form-actions" style="justify-content:flex-start;flex-wrap:wrap;margin-top:0">
+      <button class="btn btn-primary" id="backup-now" type="button">${icon("shield")}Fă o copie acum</button>
+      <a class="btn" href="/api/export/full" download>${icon("excel")}Export complet (ZIP)</a>
+      <label class="btn btn-ghost" style="cursor:pointer">${icon("refresh")}Restaurează din fișier<input type="file" id="restore-file" accept=".zip,.db" hidden></label>
+    </div>
+    ${d.backups.length ? `<div class="table-wrap mt"><table class="compact"><thead><tr><th>Copie</th><th>Tip</th><th class="r">Mărime</th><th></th></tr></thead><tbody>
+      ${d.backups.slice(0, 8).map((b) => `<tr><td>${esc(formatDate(b.created.slice(0, 10)))} ${esc(b.created.slice(11, 16))}</td><td><span class="tag">${label(b.name)}</span></td>
+        <td class="r">${fileSize(b.size)}</td><td class="actions"><button class="btn btn-sm" data-restore="${esc(b.name)}" type="button">Restaurează</button></td></tr>`).join("")}
+    </tbody></table></div>` : ""}
+    <p class="muted" style="font-size:12px;margin-top:10px">Folder: <span class="mono">${esc(d.folder)}</span></p>`;
+  const restored = (r) => { toast(`Datele au fost restaurate. Starea de dinainte e salvată ca „${r.safety_backup}”.`); render(); };
+  $("#backup-now", card).addEventListener("click", async () => {
+    try { await api("/api/backups", { method: "POST" }); toast("Copia de siguranță a fost făcută."); mountBackups(card); }
+    catch (err) { toast(err.message, "err"); }
+  });
+  card.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-restore]");
+    if (!btn) return;
+    if (!await confirmBox("Restaurați această copie?", "Datele de acum vor fi înlocuite cu cele din copie. Înainte, aplicația salvează automat starea actuală, ca să puteți reveni.", "Restaurează")) return;
+    try { restored(await api(`/api/backups/${encodeURIComponent(btn.dataset.restore)}/restore`, { method: "POST" })); }
+    catch (err) { toast(err.message, "err"); }
+  });
+  $("#restore-file", card).addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file || !await confirmBox("Restaurați din fișier?", `Datele de acum vor fi înlocuite cu cele din „${file.name}”. Starea actuală se salvează automat înainte.`, "Restaurează")) return;
+    const form = new FormData();
+    form.append("file", file);
+    try { restored(await api("/api/backups/upload", { method: "POST", body: form })); }
+    catch (err) { toast(err.message, "err"); }
   });
 }
 
@@ -2038,7 +2437,16 @@ const robot = {
     if (pay.due_soon || pay.overdue) {
       msgs.push({ tone: "warn", html: `${icon("truck")} Plăți către furnizori: <b>${lei(pay.due_soon)}</b> scadente în 7 zile${pay.overdue ? ` și <b>${lei(pay.overdue)}</b> deja restante` : ""}. Ai de încasat ${lei(now.receivables.total)}, deci ${now.receivables.total >= pay.total ? "acoperi plățile din încasări." : "încasările nu acoperă toate plățile, ai grijă la cont."}` });
     }
-    if (p.vat) msgs.push({ html: `${icon("taxes")} Pentru ${esc(p.label)} ai de plătit <b>${lei(p.vat.payable)}</b> TVA, până pe 25 a lunii următoare.` });
+    if (now.reminders?.length) {
+      const total = now.reminders.reduce((s, r) => s + r.amount, 0);
+      const first = now.reminders[0];
+      msgs.push({ tone: "warn", html: `${icon("calendar")} <b>Memento:</b> ${first.days_left === 0 ? "azi" : first.days_left === 1 ? "mâine" : `în ${first.days_left} zile (${formatDate(first.date)})`} ai de plătit <b>${lei(total)}</b>: ${now.reminders.map((r) => `${esc(r.form)} ${lei(r.amount)}`).join(", ")}. Le găsești în Calendarul fiscal, unde le poți bifa după plată.` });
+    } else if (p.vat) msgs.push({ html: `${icon("taxes")} Pentru ${esc(p.label)} ai de plătit <b>${lei(p.vat.payable)}</b> TVA, până pe 25 a lunii următoare.` });
+    const g = now.goals;
+    if (g?.revenue) {
+      const ok = g.revenue.projected >= g.revenue.target;
+      msgs.push({ tone: ok ? "" : "warn", html: `${icon("target")} Obiectivul lunii: <b>${lei(g.revenue.target)}</b> vânzări. Ești la <b>${pct(g.revenue.pct)}</b> și, în ritmul ăsta, ajungi la <b class="${ok ? "pos" : "neg"}">${lei(g.revenue.projected)}</b>${ok ? ". Bravo!" : `. Ar trebui cam <b>${lei(g.revenue.daily_needed)}</b> pe zi până la final de lună.`}` });
+    }
     const warn = past.insights.find((n) => n.tone === "warn" || n.tone === "bad");
     if (warn) msgs.push({ html: `${icon("alert")} ${esc(warn.text)}`, tone: "warn" });
 
@@ -2066,7 +2474,8 @@ const robot = {
     this.actions = [
       ...(this.fiscalNews ? [{ label: "Am înțeles", primary: true, run: async () => { await api("/api/fiscal/seen", { method: "POST" }); this.fiscalNews = false; toast("Mulțumesc! Am notat că ai văzut noutățile."); this.close(); } }] : []),
       { label: "Adaugă o vânzare", run: () => { this.close(); quickAdd("sale"); } },
-      { label: "Vezi taxele", run: () => { this.close(); location.hash = "#taxe"; } },
+      { label: "Calendar fiscal", run: () => { this.close(); location.hash = "#calendar"; } },
+      { label: "Bani în cont", run: () => { this.close(); location.hash = "#bani"; } },
     ];
     this.rendered = false;
   },

@@ -1,6 +1,6 @@
 {
   "country": "RO",
-  "version": "2026.3",
+  "version": "2026.4",
   "published": "2026-10-14",
   "source": "Codul fiscal (Legea 227/2015) cu modificările ulterioare (legi și ordonanțe de urgență). Verificați actul normativ pe legislatie.just.ro.",
   "rules": [
@@ -21,7 +21,8 @@
       "changes": [
         "Impozitul pe dividende a crescut de la 8% la 10%.",
         "Microîntreprinderile plăteau 1% sau 3% din venituri, în funcție de activitate și de nivelul veniturilor (aplicația folosește 1% doar pentru regimul micro)."
-      ]
+      ],
+      "min_wage": 4050
     },
     {
       "effective_from": "2025-08-01",
@@ -40,7 +41,8 @@
       "changes": [
         "Cota standard de TVA crește de la 19% la 21%.",
         "Cotele reduse de 5% și 9% se unifică la 11% (de exemplu apă și canalizare)."
-      ]
+      ],
+      "min_wage": 4050
     },
     {
       "effective_from": "2026-01-01",
@@ -60,6 +62,32 @@
         "Impozitul pe dividende crește de la 10% la 16%. Din profitul pe care îl scoateți din firmă vă rămâne mai puțin.",
         "Microîntreprinderile au o singură cotă de 1%, cu un plafon de venituri mai mic (100.000 euro pe an). Verificați condițiile exacte cu contabilul.",
         "Impozitul pe profit rămâne 16%, iar contribuțiile pe salarii (CAS 25%, CASS 10%, impozit 10%, CAM 2,25%) nu se schimbă."
+      ],
+      "min_wage": 4050
+    },
+    {
+      "effective_from": "2026-07-01",
+      "title": "Salariul minim crește de la 1 iulie 2026",
+      "rates": {
+        "cas_rate": 25,
+        "cass_rate": 10,
+        "income_tax_rate": 10,
+        "cam_rate": 2.25,
+        "profit_tax_rate": 16,
+        "micro_tax_rate": 1,
+        "dividend_tax_rate": 16,
+        "vat_standard_rate": 21,
+        "vat_reduced_rate": 11
+      },
+      "min_wage": 4325,
+      "changes": [
+        "Salariul minim brut crește de la 4.050 la 4.325 lei pe lună (HG 146/2026), pentru normă întreagă. Cine are jumătate de normă trebuie să primească cel puțin jumătate din minim.",
+        "Suma scutită de taxe pentru salariile la nivelul minimului scade de la 300 la 200 de lei (OUG 89/2025). Contabilul aplică scutirea pe statul de plată, dacă sunt îndeplinite condițiile.",
+        "Celelalte cote (TVA, impozit pe profit, contribuții) nu se schimbă."
+      ],
+      "sources": [
+        "https://legislatie.just.ro",
+        "https://www.monitoruloficial.ro"
       ]
     }
   ]

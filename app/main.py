@@ -5,6 +5,7 @@ Pornire: uvicorn app.main:app --host 0.0.0.0 --port 8000 (din folderul testify_h
 
 import asyncio
 import re
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
@@ -16,7 +17,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import assistant_ai, auth, calc, demo, exports, fiscal, importer, inventory
+from . import (assistant_ai, audit, auth, backup, calc, closing, demo, exports, fiscal, importer, inventory,
+               obligations, treasury)
 from .db import DEFAULT_SETTINGS, DEFAULT_SUPPLIER_TERMS, get_conn, get_settings, init_db, set_setting
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -38,13 +40,25 @@ async def fiscal_watcher() -> None:
         await asyncio.sleep(fiscal.CHECK_INTERVAL_HOURS * 3600)
 
 
+async def backup_watcher() -> None:
+    """Copia de siguranță zilnică: la pornire și apoi verificare din oră în oră."""
+    while True:
+        try:
+            await asyncio.to_thread(backup.daily_backup)
+        except Exception:  # discul plin sau folder blocat nu opresc aplicația
+            pass
+        await asyncio.sleep(3600)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    watcher = asyncio.create_task(fiscal_watcher()) if fiscal.feed_url() else None
+    tasks = [asyncio.create_task(backup_watcher())]
+    if fiscal.feed_url():
+        tasks.append(asyncio.create_task(fiscal_watcher()))
     yield
-    if watcher:
-        watcher.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="Testify Hardware", description="Aplicația internă pentru calculul lunar",
@@ -57,6 +71,8 @@ FIELD_NAMES = {
     "name": "numele", "code": "codul", "category": "categoria", "password": "parola", "new": "parola nouă",
     "hire_date": "data angajării", "end_date": "data plecării", "effective_from": "data", "min_stock": "stocul minim",
     "payment_terms": "termenul de plată", "company_name": "numele firmei", "month": "luna",
+    "revenue": "vânzări", "profit": "profit", "balance": "soldul", "days": "zilele", "discount": "reducerea",
+    "payday": "ziua salariilor", "tax_loss_carried": "pierderea fiscală", "hours_per_day": "norma", "leave_days": "zilele de concediu",
 }
 
 
@@ -89,6 +105,17 @@ def friendly_error(error: dict) -> str:
 async def validation_error(_request, exc: RequestValidationError):
     details = list(dict.fromkeys(friendly_error(error) for error in exc.errors()))
     return JSONResponse(status_code=422, content={"detail": " ".join(details)})
+
+
+@app.exception_handler(sqlite3.DatabaseError)
+async def database_error(_request, exc: sqlite3.DatabaseError):
+    if closing.is_lock_error(exc):
+        return JSONResponse(status_code=400, content={"detail": CLOSED_MESSAGE})
+    raise exc
+
+
+CLOSED_MESSAGE = ("Luna este închisă, deci documentele din ea nu se mai pot modifica. Dacă trebuie "
+                  "neapărat o corectură, redeschideți luna din Rapoarte → Închiderea lunii.")
 
 
 @app.get("/", include_in_schema=False)
@@ -183,7 +210,9 @@ def auth_setup(body: SetupIn, response: Response):
         auth.set_password(conn, body.password)
         code = auth.set_recovery_code(conn)
         if body.demo:
-            demo.load_demo_data(conn)
+            with audit.paused(conn):
+                demo.load_demo_data(conn)
+            audit.log_event(conn, "Au fost încărcate datele firmei din T3 2026", "import")
         start_session(response, conn)
     return {"ok": True, "recovery_code": code}
 
@@ -250,7 +279,10 @@ def new_recovery_code(body: CurrentPasswordIn):
 @api.get("/dashboard")
 def get_dashboard(month: str = Query(default_factory=calc.current_month, pattern=MONTH_PATTERN)):
     with get_conn() as conn:
-        return calc.dashboard(conn, month)
+        result = calc.dashboard(conn, month)
+        result["reminders"] = obligations.reminders(conn)
+        result["closed"] = bool(conn.execute("SELECT 1 FROM month_locks WHERE month = ?", (month,)).fetchone())
+        return result
 
 
 @api.get("/payroll")
@@ -300,6 +332,20 @@ class SaleIn(BaseModel):
     description: str = Field(default="", max_length=200)
     invoice_number: str | None = Field(default=None, max_length=40)
     paid: bool | None = None
+    discount: float = Field(default=0, ge=0, lt=100)  # reducere în procente, pe facturile cu produs
+
+    @field_validator("date")
+    @classmethod
+    def check_date(cls, value):
+        return not_in_future(valid_date(value))
+
+
+class ReturnIn(BaseModel):
+    """Retur (stornare): o factură cu minus care readuce marfa în stoc și scade TVA."""
+    date: str = Field(default_factory=lambda: date.today().isoformat())
+    quantity: int | None = Field(default=None, ge=1, le=1_000_000)
+    amount: float | None = Field(default=None, gt=0, le=MAX_AMOUNT)
+    reason: str = Field(default="", max_length=200)
 
     @field_validator("date")
     @classmethod
@@ -334,14 +380,15 @@ def sale_values(conn, body: SaleIn) -> dict:
         if not price:
             raise HTTPException(status_code=422, detail="Completați prețul de vânzare.")
         values.update(product_id=product["id"], product=product["name"], quantity=quantity,
-                      unit_price=price, unit_cost=product["cost"], amount=round(quantity * price, 2),
+                      unit_price=price, unit_cost=product["cost"], discount=body.discount,
+                      amount=round(quantity * price * (1 - body.discount / 100), 2),
                       description=body.description or f"{product['name']} ×{quantity}")
     else:
         if not body.amount:
             raise HTTPException(status_code=422, detail="Completați suma vânzării.")
         if not body.description.strip():
             raise HTTPException(status_code=422, detail="Completați descrierea.")
-        values.update(product_id=None, product=None, quantity=None, unit_price=None,
+        values.update(product_id=None, product=None, quantity=None, unit_price=None, discount=0,
                       unit_cost=body.cost_total or 0, amount=round(body.amount, 2),
                       description=body.description.strip())
     return values
@@ -355,7 +402,7 @@ def check_invoice_unique(conn, number: str, sale_id: int | None = None) -> None:
 
 
 SALE_COLUMNS = ["date", "description", "product", "quantity", "amount", "product_id", "client_id",
-                "unit_price", "unit_cost", "due_date", "paid"]
+                "unit_price", "unit_cost", "due_date", "paid", "discount"]
 
 
 def stock_warning(conn, product_id: int | None) -> str | None:
@@ -374,7 +421,10 @@ def list_sales(month: str = Query(default_factory=calc.current_month, pattern=MO
     start, end = calc.month_bounds(month)
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT s.*, c.name AS client_name, c.type AS client_type FROM sales s "
+            "SELECT s.*, c.name AS client_name, c.type AS client_type, "
+            "(SELECT -SUM(amount) FROM sales r WHERE r.storno_of = s.id) AS returned_amount, "
+            "(SELECT -SUM(quantity) FROM sales r WHERE r.storno_of = s.id) AS returned_quantity, "
+            "(SELECT invoice_number FROM sales o WHERE o.id = s.storno_of) AS storno_of_invoice FROM sales s "
             "LEFT JOIN clients c ON c.id = s.client_id WHERE s.date BETWEEN ? AND ? "
             "ORDER BY s.date DESC, s.id DESC",
             (start, end),
@@ -408,9 +458,12 @@ def create_sale(body: SaleIn):
 def update_sale(sale_id: int, body: SaleIn):
     with get_conn() as conn:
         values = sale_values(conn, body)
-        old = conn.execute("SELECT product_id FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        old = conn.execute("SELECT product_id, storno_of FROM sales WHERE id = ?", (sale_id,)).fetchone()
         if not old:
             raise HTTPException(status_code=404, detail="Vânzarea nu există.")
+        if old["storno_of"] or has_returns(conn, sale_id):
+            raise HTTPException(status_code=400, detail="Factura are o stornare legată de ea și nu se mai "
+                                "poate modifica. Ștergeți stornarea întâi sau faceți încă un retur.")
         if body.invoice_number:
             values["invoice_number"] = body.invoice_number.strip()
             check_invoice_unique(conn, values["invoice_number"], sale_id)
@@ -436,11 +489,66 @@ def set_sale_paid(sale_id: int, body: PaidIn):
     return {"ok": True}
 
 
+def has_returns(conn, sale_id: int) -> bool:
+    return conn.execute("SELECT 1 FROM sales WHERE storno_of = ?", (sale_id,)).fetchone() is not None
+
+
+@api.post("/sales/{sale_id}/return", status_code=201)
+def return_sale(sale_id: int, body: ReturnIn):
+    """Stornare totală sau parțială: factură nouă, cu minus, legată de cea inițială."""
+    with get_conn() as conn:
+        original = conn.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        if not original:
+            raise HTTPException(status_code=404, detail="Vânzarea nu există.")
+        if original["storno_of"] or original["amount"] < 0:
+            raise HTTPException(status_code=400, detail="O stornare nu se poate storna din nou.")
+        if body.date < original["date"]:
+            raise HTTPException(status_code=400, detail="Returul nu poate fi înaintea facturii.")
+        done = conn.execute("SELECT COALESCE(-SUM(quantity), 0) AS qty, COALESCE(-SUM(amount), 0) AS amount "
+                            "FROM sales WHERE storno_of = ?", (sale_id,)).fetchone()
+        reason = body.reason.strip()
+        if original["product_id"]:
+            left = original["quantity"] - done["qty"]
+            quantity = body.quantity or left
+            if quantity > left:
+                raise HTTPException(status_code=400, detail=f"Se mai pot returna cel mult {left} buc. din "
+                                    f"factura {original['invoice_number']}.")
+            amount = -round(quantity * original["unit_price"] * (1 - (original["discount"] or 0) / 100), 2)
+            values = {"quantity": -quantity, "unit_cost": original["unit_cost"], "unit_price": original["unit_price"],
+                      "description": f"Retur {original['product']} ×{quantity}" + (f": {reason}" if reason else "")}
+        else:
+            left = round(original["amount"] - done["amount"], 2)
+            amount_back = round(body.amount or left, 2)
+            if amount_back > left + 0.001:
+                raise HTTPException(status_code=400, detail=f"Se mai pot storna cel mult {left:.2f} lei din "
+                                    f"factura {original['invoice_number']}.")
+            amount = -amount_back
+            share = amount_back / original["amount"]
+            values = {"quantity": None, "unit_price": None, "unit_cost": -round((original["unit_cost"] or 0) * share, 2),
+                      "description": f"Stornare {original['description']}" + (f": {reason}" if reason else "")}
+        if left <= 0:
+            raise HTTPException(status_code=400, detail="Factura a fost deja stornată complet.")
+        number = next_invoice_number(conn)
+        cursor = conn.execute(
+            "INSERT INTO sales(date, description, product, quantity, amount, invoice_number, product_id, "
+            "client_id, unit_price, unit_cost, due_date, paid, storno_of, discount) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (body.date, values["description"], original["product"], values["quantity"], amount, number,
+             original["product_id"], original["client_id"], values["unit_price"], values["unit_cost"],
+             body.date, original["paid"], sale_id, original["discount"] or 0))
+    return {"id": cursor.lastrowid, "invoice_number": number, "amount": amount}
+
+
 @api.delete("/sales/{sale_id}")
 def delete_sale(sale_id: int):
     with get_conn() as conn:
-        if conn.execute("DELETE FROM sales WHERE id = ?", (sale_id,)).rowcount == 0:
+        row = conn.execute("SELECT product_id FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Vânzarea nu există.")
+        if has_returns(conn, sale_id):
+            raise HTTPException(status_code=400, detail="Factura are o stornare. Ștergeți întâi stornarea.")
+        conn.execute("DELETE FROM sales WHERE id = ?", (sale_id,))
+        ensure_stock(conn, row["product_id"])  # ștergerea unui retur scoate marfa din nou din stoc
     return {"ok": True}
 
 
@@ -853,7 +961,17 @@ async def import_data(files: list[UploadFile] = File(...), replace: bool = Form(
         contents.append((upload.filename or "fisier", data))
     try:
         with get_conn() as conn:
-            return importer.import_files(conn, contents, replace=replace)
+            with audit.paused(conn):
+                result = importer.import_files(conn, contents, replace=replace)
+            audit.log_event(conn, f"Import din {', '.join(name for name, _ in contents)}"
+                            + (" (datele vechi au fost înlocuite)" if replace else ""), "import")
+            return result
+    except sqlite3.DatabaseError as error:
+        if closing.is_lock_error(error):
+            raise HTTPException(status_code=400, detail="Importul nu a reușit: fișierul conține documente "
+                                "dintr-o lună închisă. Nu s-a modificat nimic.")
+        raise HTTPException(status_code=400, detail="Importul nu a reușit: fișierul pare stricat sau "
+                            "nu este un Excel/CSV valid. Nu s-a modificat nimic.")
     except (ValueError, KeyError) as error:
         raise HTTPException(status_code=400, detail=f"Importul nu a reușit: {error}")
     except Exception:
@@ -869,6 +987,8 @@ class EmployeeIn(BaseModel):
     hire_date: str
     end_date: str | None = None
     notes: str = Field(default="", max_length=500)
+    hours_per_day: int = Field(default=8, ge=1, le=8)   # norma: 8 = normă întreagă, 4 = jumătate de normă
+    leave_days: int = Field(default=21, ge=0, le=60)    # zile de concediu de odihnă pe an
 
     @field_validator("hire_date", "end_date")
     @classmethod
@@ -905,11 +1025,22 @@ def employee_details(conn, employee) -> dict:
     )]
     gross = calc.gross_for_month(conn, employee, calc.current_month())
     current = history[0]["gross"] if history else 0
+    year = calc.current_month()[:4]
+    taken = conn.execute("SELECT COALESCE(SUM(days), 0) FROM absences WHERE employee_id = ? AND kind = 'odihna' "
+                         "AND month LIKE ?", (employee["id"], f"{year}-%")).fetchone()[0]
+    minimum = calc.min_wage_for(employee, settings)
+    absences = [dict(row) for row in conn.execute(
+        "SELECT * FROM absences WHERE employee_id = ? ORDER BY month DESC, id DESC LIMIT 24", (employee["id"],))]
     return {
         **dict(employee),
         "active": gross is not None,
         "salary": calc.salary_breakdown(gross if gross is not None else current, settings),
         "history": history,
+        "leave_taken": taken,
+        "leave_left": employee["leave_days"] - taken,
+        "min_wage": minimum,
+        "below_min_wage": bool(minimum and (gross if gross is not None else current) < minimum),
+        "absences": absences,
     }
 
 
@@ -926,8 +1057,9 @@ def list_employees():
 def create_employee(body: NewEmployeeIn):
     with get_conn() as conn:
         cursor = conn.execute(
-            "INSERT INTO employees(name, role, hire_date, end_date, notes) VALUES (?, ?, ?, ?, ?)",
-            (body.name, body.role, body.hire_date, body.end_date, body.notes),
+            "INSERT INTO employees(name, role, hire_date, end_date, notes, hours_per_day, leave_days) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (body.name, body.role, body.hire_date, body.end_date, body.notes, body.hours_per_day, body.leave_days),
         )
         conn.execute(
             "INSERT INTO salary_history(employee_id, gross, effective_from, note) "
@@ -941,9 +1073,10 @@ def create_employee(body: NewEmployeeIn):
 def update_employee(employee_id: int, body: EmployeeIn):
     with get_conn() as conn:
         cursor = conn.execute(
-            "UPDATE employees SET name = ?, role = ?, hire_date = ?, end_date = ?, notes = ? "
-            "WHERE id = ?",
-            (body.name, body.role, body.hire_date, body.end_date, body.notes, employee_id),
+            "UPDATE employees SET name = ?, role = ?, hire_date = ?, end_date = ?, notes = ?, hours_per_day = ?, "
+            "leave_days = ? WHERE id = ?",
+            (body.name, body.role, body.hire_date, body.end_date, body.notes, body.hours_per_day, body.leave_days,
+             employee_id),
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Angajatul nu există.")
@@ -977,6 +1110,44 @@ def add_salary(employee_id: int, body: SalaryIn):
     return {"ok": True}
 
 
+class AbsenceIn(BaseModel):
+    month: str = Field(pattern=MONTH_PATTERN)
+    kind: str = Field(pattern="^(odihna|medical|fara_plata)$")
+    days: int = Field(ge=1, le=23)
+    note: str = Field(default="", max_length=200)
+
+
+@api.post("/employees/{employee_id}/absences", status_code=201)
+def add_absence(employee_id: int, body: AbsenceIn):
+    from .ro_calendar import working_days
+
+    with get_conn() as conn:
+        if not conn.execute("SELECT 1 FROM employees WHERE id = ?", (employee_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="Angajatul nu există.")
+        if conn.execute("SELECT 1 FROM month_locks WHERE month = ?", (body.month,)).fetchone():
+            raise HTTPException(status_code=400, detail=CLOSED_MESSAGE)
+        already = conn.execute("SELECT COALESCE(SUM(days), 0) FROM absences WHERE employee_id = ? AND month = ?",
+                               (employee_id, body.month)).fetchone()[0]
+        if already + body.days > working_days(body.month):
+            raise HTTPException(status_code=400, detail=f"{calc.month_label(body.month)} are doar "
+                                f"{working_days(body.month)} zile lucrătoare.")
+        cursor = conn.execute("INSERT INTO absences(employee_id, month, kind, days, note) VALUES (?, ?, ?, ?, ?)",
+                              (employee_id, body.month, body.kind, body.days, body.note))
+    return {"id": cursor.lastrowid}
+
+
+@api.delete("/absences/{absence_id}")
+def delete_absence(absence_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT month FROM absences WHERE id = ?", (absence_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Absența nu există.")
+        if conn.execute("SELECT 1 FROM month_locks WHERE month = ?", (row["month"],)).fetchone():
+            raise HTTPException(status_code=400, detail=CLOSED_MESSAGE)
+        conn.execute("DELETE FROM absences WHERE id = ?", (absence_id,))
+    return {"ok": True}
+
+
 @api.get("/salary-preview")
 def salary_preview(gross: float = Query(gt=0)):
     with get_conn() as conn:
@@ -990,6 +1161,8 @@ class SettingsIn(BaseModel):
     owner_name: str = Field(default="", max_length=60)
     tax_regime: str = Field(pattern="^(profit|micro)$")
     vat_payer: bool = True
+    payday: int = Field(default=10, ge=1, le=28)
+    tax_loss_carried: float = Field(default=0, ge=0, le=MAX_AMOUNT)
 
 
 @api.get("/settings")
@@ -1002,8 +1175,16 @@ def read_settings():
 @api.put("/settings")
 def write_settings(body: SettingsIn):
     with get_conn() as conn:
+        old = get_settings(conn)
+        changed = []
         for key, value in body.model_dump().items():
-            set_setting(conn, key, ("1" if value else "0") if isinstance(value, bool) else str(value))
+            text = ("1" if value else "0") if isinstance(value, bool) else str(value)
+            if old.get(key) != text:
+                changed.append(key)
+            set_setting(conn, key, text)
+        if changed:
+            audit.log_event(conn, "Setările firmei au fost modificate (" + ", ".join(
+                audit.SETTING_LABELS.get(key, key) for key in changed) + ")", "settings")
     return {"ok": True}
 
 
@@ -1066,10 +1247,168 @@ def ai_chat(body: ChatIn):
         raise HTTPException(status_code=error.status, detail=str(error))
 
 
+# ---------- Copii de siguranță ----------
+
+@api.get("/backups")
+def list_backups():
+    return {"backups": backup.list_backups(), "folder": str(backup.backup_dir()), "keep": backup.KEEP}
+
+
+@api.post("/backups", status_code=201)
+def make_backup():
+    return backup.create_backup("manual")
+
+
+def after_restore(token: str | None) -> None:
+    """După restaurare: schema adusă la zi și sesiunea curentă păstrată (nu e scos afară)."""
+    init_db()
+    with get_conn() as conn:
+        if token:
+            conn.execute("INSERT OR IGNORE INTO sessions(token) VALUES (?)", (token,))
+        audit.log_event(conn, "Datele au fost restaurate dintr-o copie de siguranță", "backup")
+
+
+@api.post("/backups/{name}/restore")
+def restore_backup(name: str, testify_session: str | None = Cookie(default=None)):
+    try:
+        safety = backup.restore_from(backup.backup_path(name))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    after_restore(testify_session)
+    return {"ok": True, "safety_backup": safety["name"]}
+
+
+@api.post("/backups/upload")
+async def restore_upload(file: UploadFile = File(...), testify_session: str | None = Cookie(default=None)):
+    data = await file.read()
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Fișierul este prea mare.")
+    try:
+        safety = await asyncio.to_thread(backup.restore_upload, data, file.filename or "")
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    after_restore(testify_session)
+    return {"ok": True, "safety_backup": safety["name"]}
+
+
+@api.get("/export/full")
+def export_full():
+    content = backup.full_export()
+    return Response(content, media_type="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="testify-export-complet-{date.today().isoformat()}.zip"'})
+
+
+# ---------- Jurnal, închiderea lunii, calendar fiscal, trezorerie, obiective ----------
+
+@api.get("/audit")
+def get_audit(limit: int = Query(default=200, ge=1, le=2000), table: str | None = Query(default=None)):
+    with get_conn() as conn:
+        return audit.entries(conn, limit, table)
+
+
+@api.get("/closing")
+def closing_overview(month: str = Query(default_factory=lambda: calc.shift_month(calc.current_month(), -1),
+                                        pattern=MONTH_PATTERN)):
+    with get_conn() as conn:
+        closed = closing.closed_months(conn)
+        return {"month": month, "closed": closed, "is_closed": any(c["month"] == month for c in closed),
+                "can_close": month < calc.current_month(), "checklist": closing.checklist(conn, month)}
+
+
+@api.post("/closing/{month}")
+def close_month(month: str):
+    if not re.match(MONTH_PATTERN, month):
+        raise HTTPException(status_code=422, detail="Luna nu este corectă.")
+    with get_conn() as conn:
+        try:
+            snapshot = closing.close_month(conn, month)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+    backup.create_backup(f"inchidere-{month}")
+    return {"ok": True, "snapshot": snapshot}
+
+
+@api.delete("/closing/{month}")
+def reopen_month(month: str):
+    with get_conn() as conn:
+        try:
+            closing.reopen_month(conn, month)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+    return {"ok": True}
+
+
+@api.get("/obligations")
+def get_obligations(year: int = Query(default_factory=lambda: date.today().year, ge=2000, le=2100)):
+    with get_conn() as conn:
+        return {"items": obligations.calendar_items(conn), "profit_tax": obligations.profit_tax_quarters(conn, year),
+                "regime": get_settings(conn).get("tax_regime", "profit")}
+
+
+@api.patch("/obligations/{item_id}/paid")
+def set_obligation_paid(item_id: str, body: PaidIn):
+    if not re.match(r"^[a-z0-9-]{3,40}$", item_id, re.I):
+        raise HTTPException(status_code=422, detail="Obligația nu este corectă.")
+    with get_conn() as conn:
+        obligations.set_paid(conn, item_id, body.paid)
+    return {"ok": True}
+
+
+class CashBalanceIn(BaseModel):
+    balance: float = Field(ge=-MAX_AMOUNT, le=MAX_AMOUNT)
+
+
+@api.get("/treasury")
+def get_treasury(include_overdue: bool = False):
+    with get_conn() as conn:
+        return treasury.forecast(conn, include_overdue=include_overdue)
+
+
+@api.put("/treasury/balance")
+def set_cash_balance(body: CashBalanceIn):
+    with get_conn() as conn:
+        set_setting(conn, "cash_balance", str(round(body.balance, 2)))
+        set_setting(conn, "cash_balance_date", date.today().isoformat())
+    return {"ok": True}
+
+
+class GoalIn(BaseModel):
+    month: str = Field(pattern=r"^(default|\d{4}-(0[1-9]|1[0-2]))$")
+    revenue: float | None = Field(default=None, gt=0, le=MAX_AMOUNT)
+    profit: float | None = Field(default=None, ge=-MAX_AMOUNT, le=MAX_AMOUNT)
+
+
+@api.get("/goals")
+def get_goals(month: str = Query(default_factory=calc.current_month, pattern=MONTH_PATTERN)):
+    with get_conn() as conn:
+        general = conn.execute("SELECT * FROM goals WHERE month = 'default'").fetchone()
+        specific = conn.execute("SELECT * FROM goals WHERE month = ?", (month,)).fetchone()
+        return {"default": dict(general) if general else None, "month": dict(specific) if specific else None,
+                "effective": calc.goals_for(conn, month)}
+
+
+@api.put("/goals")
+def save_goal(body: GoalIn):
+    with get_conn() as conn:
+        if body.revenue is None and body.profit is None:
+            conn.execute("DELETE FROM goals WHERE month = ?", (body.month,))
+        else:
+            conn.execute("INSERT INTO goals(month, revenue, profit) VALUES (?, ?, ?) ON CONFLICT(month) DO UPDATE "
+                         "SET revenue = excluded.revenue, profit = excluded.profit",
+                         (body.month, body.revenue, body.profit))
+    return {"ok": True}
+
+
 @api.post("/demo")
 def reload_demo():
+    backup.create_backup("inainte-de-demo")
     with get_conn() as conn:
-        return demo.load_demo_data(conn)
+        conn.execute("DELETE FROM month_locks")
+        with audit.paused(conn):
+            result = demo.load_demo_data(conn)
+        audit.log_event(conn, "Au fost încărcate datele firmei din T3 2026 (datele vechi au fost înlocuite)",
+                        "import")
+        return result
 
 
 app.include_router(api)

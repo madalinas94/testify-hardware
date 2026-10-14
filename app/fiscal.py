@@ -58,6 +58,11 @@ def validate_feed(feed: dict) -> list[dict]:
             if not 0 <= value <= 100:
                 raise ValueError(f"Cota {key} este în afara intervalului 0–100.")
             values[key] = value
+        if rule.get("min_wage") is not None:  # salariul minim brut (lei), opțional
+            minimum = float(rule["min_wage"])
+            if not 1000 <= minimum <= 100_000:
+                raise ValueError("Salariul minim nu pare corect.")
+            values["min_wage"] = minimum
         changes = [str(change) for change in rule.get("changes", [])]
         clean.append({"effective_from": effective, "title": str(rule.get("title", "")),
                       "rates": values, "changes": changes})

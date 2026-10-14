@@ -159,6 +159,10 @@ def merge_rules(feed: dict, proposals: list[dict], today: date) -> tuple[dict, l
             continue  # regula există deja, cu aceleași cote
         rule = {"effective_from": proposal["effective_from"], "title": proposal["title"],
                 "rates": rates, "changes": proposal["changes"], "sources": proposal["sources"]}
+        # Salariul minim nu face parte din cercetare: se păstrează cel din regula anterioară.
+        earlier = [r for r in feed["rules"] if r["effective_from"] <= rule["effective_from"] and "min_wage" in r]
+        if earlier:
+            rule["min_wage"] = max(earlier, key=lambda r: r["effective_from"])["min_wage"]
         existing[rule["effective_from"]] = rule
         changed.append(rule)
     if not changed:

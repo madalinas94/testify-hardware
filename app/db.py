@@ -123,6 +123,41 @@ CREATE TABLE IF NOT EXISTS fiscal_rules (
     seen           INTEGER NOT NULL DEFAULT 0,
     received_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Lunile închise: după închidere, documentele din lună nu se mai pot modifica (vezi closing.py).
+CREATE TABLE IF NOT EXISTS month_locks (
+    month     TEXT PRIMARY KEY,
+    closed_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    snapshot  TEXT NOT NULL DEFAULT '{}'
+);
+
+-- Jurnalul de modificări: cine a schimbat ce și când (completat automat, vezi audit.py).
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+    table_name TEXT NOT NULL,
+    row_id     INTEGER,
+    action     TEXT NOT NULL,
+    old        TEXT,
+    new        TEXT
+);
+
+-- Zile nelucrate ale angajaților într-o lună: concediu de odihnă, medical sau fără plată.
+CREATE TABLE IF NOT EXISTS absences (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    month       TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    days        INTEGER NOT NULL,
+    note        TEXT NOT NULL DEFAULT ''
+);
+
+-- Obiectivele lunare (month = 'default' înseamnă „în fiecare lună”).
+CREATE TABLE IF NOT EXISTS goals (
+    month   TEXT PRIMARY KEY,
+    revenue REAL,
+    profit  REAL
+);
 """
 
 INDEXES = """
@@ -131,6 +166,7 @@ CREATE INDEX IF NOT EXISTS idx_sales_product ON sales(product_id);
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
 CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(date);
 CREATE INDEX IF NOT EXISTS idx_purchases_product ON purchases(product_id);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at);
 """
 
 # Coloane adăugate după prima versiune: bazele de date existente le primesc la pornire.
@@ -147,6 +183,10 @@ MIGRATIONS = [
     ("expenses", "vat_kind", "TEXT NOT NULL DEFAULT 'standard'"),
     ("purchases", "due_date", "TEXT"),
     ("purchases", "paid", "INTEGER NOT NULL DEFAULT 1"),
+    ("sales", "storno_of", "INTEGER REFERENCES sales(id)"),
+    ("sales", "discount", "REAL NOT NULL DEFAULT 0"),
+    ("employees", "hours_per_day", "INTEGER NOT NULL DEFAULT 8"),
+    ("employees", "leave_days", "INTEGER NOT NULL DEFAULT 21"),
 ]
 
 # Termenul de plată implicit la furnizori (clientul plătește la 15–30 de zile).
@@ -158,6 +198,10 @@ DEFAULT_SETTINGS = {
     "owner_name": "Robert",
     "tax_regime": "profit",      # "profit" (impozit pe profit) sau "micro" (microîntreprindere)
     "vat_payer": "1",            # plătitor de TVA, conform raportului contabil
+    "cash_balance": "",          # soldul din bancă și casă, introdus de proprietar (pentru prognoză)
+    "cash_balance_date": "",
+    "payday": "10",              # ziua din lună în care se plătesc salariile
+    "tax_loss_carried": "0",     # pierdere fiscală din anii anteriori, de recuperat
 }
 
 # Categoria de TVA implicită: standard (21%), redusă (11%) sau fără TVA (scutit).
@@ -236,6 +280,10 @@ def init_db() -> None:
 
         from .fiscal import install_bundled_rules
         install_bundled_rules(conn)
+
+        from . import audit, closing
+        audit.install_triggers(conn)
+        closing.install_triggers(conn)
 
 
 def get_settings(conn: sqlite3.Connection) -> dict:

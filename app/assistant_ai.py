@@ -106,6 +106,8 @@ def business_snapshot(conn: sqlite3.Connection, today: str | None = None) -> dic
         "COALESCE(SUM(s.amount), 0) AS total_sales, COUNT(s.id) AS invoices, MAX(s.date) AS last_sale "
         "FROM clients c LEFT JOIN sales s ON s.client_id = c.id GROUP BY c.id ORDER BY total_sales DESC")]
     employees = calc.payroll(conn, today[:7])["lines"]
+    from . import obligations, treasury  # import local: modulele depind de calc
+    forecast = treasury.forecast(conn)
     return {
         "company": settings.get("company_name"),
         "today": today,
@@ -123,8 +125,14 @@ def business_snapshot(conn: sqlite3.Connection, today: str | None = None) -> dic
                                               "margin_pct", "stock", "min_stock", "status", "stock_value",
                                               "sold_30", "days_left")} for p in products if p["active"]],
         "clients": clients,
-        "employees": [{key: e[key] for key in ("name", "role", "gross", "net", "employer_cost")}
+        "employees": [{key: e[key] for key in ("name", "role", "gross", "net", "employer_cost", "worked_days")}
                       for e in employees],
+        "fiscal_calendar_next": [{key: i[key] for key in ("date", "form", "title", "amount", "paid")}
+                                 for i in obligations.calendar_items(conn) if i["days_left"] >= 0][:12],
+        "cash_forecast_30_days": {key: forecast[key] for key in (
+            "balance_set", "start_balance", "lowest", "end_balance", "total_in", "total_out")},
+        "goals_this_month": calc.goals_for(conn, today[:7]),
+        "closed_months": [row["month"] for row in conn.execute("SELECT month FROM month_locks ORDER BY month")],
     }
 
 

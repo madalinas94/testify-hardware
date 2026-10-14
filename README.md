@@ -1,11 +1,22 @@
 # Testify Hardware — aplicația internă pentru calculul lunar
 
+[![Teste](https://github.com/madalinas94/testify-hardware/actions/workflows/tests.yml/badge.svg)](https://github.com/madalinas94/testify-hardware/actions/workflows/tests.yml)
+[![Program Windows](https://github.com/madalinas94/testify-hardware/actions/workflows/windows-exe.yml/badge.svg)](https://github.com/madalinas94/testify-hardware/actions/workflows/windows-exe.yml)
+
 Aplicație web care rulează pe calculatorul de la birou și înlocuiește fișierele Excel.
 Îi arată proprietarului, „la un click distanță”, câți bani intră, unde se duc, ce taxe
 plătește firma și cât îi rămâne lui. Cotele de taxe se actualizează automat când se
 schimbă Codul fiscal.
 
 ## Cum o deschideți (pe scurt)
+
+**Varianta cea mai simplă (Windows, fără Python):** în tabul **Actions → Program Windows (.exe)**,
+deschideți ultima rulare verde și descărcați **TestifyHardware-Windows** (sau, dacă există, arhiva
+din **Releases**). Dezarhivați, dublu-click pe `TestifyHardware.exe` și aplicația se deschide în
+browser. Datele stau în folderul `TestifyData`, lângă program. Windows poate afișa „Windows protected
+your PC”, pentru că programul nu e semnat digital: apăsați **More info → Run anyway**.
+
+**Varianta cu Python** (Windows, Mac, Linux):
 
 1. **Instalați Python** (gratuit) de pe <https://www.python.org/downloads/>. Pe Windows, la
    instalare bifați **„Add python.exe to PATH”**.
@@ -27,11 +38,13 @@ schimbă Codul fiscal.
 | **Stoc** | Produse cu cod, furnizor, preț, cost, stoc minim; stocul scade la vânzare și crește la recepția de marfă (NIR); alerte de stoc minim, „se termină în ~X zile”, fișa de inventar lunară |
 | **Clienți** | Clienți B2B/B2C/marketplace cu termen de plată, vânzări pe client, facturi de încasat și restanțe |
 | **Furnizori** | Furnizori cu termen de plată (implicit 30 de zile), marfă cumpărată, plăți de făcut în ordinea scadenței, restanțe și ce e scadent în 7 zile |
+| **Trezorerie** | Câți bani vor fi în cont în următoarele 30 de zile: soldul de azi + încasări la scadență + vânzări pe loc − furnizori − cheltuieli − salarii − taxe; grafic zi de zi și avertizare dacă soldul ar ajunge pe minus |
 | **Cheltuieli** | 19 categorii implicite, editabile: marfă, chirie, utilități, internet și telefonie, transport, combustibil, contabilitate, marketing, software, echipamente, comisioane bancare/POS, asigurări, reparații, ambalaje, taxe locale, SSM, training, protocol, altele |
-| **Angajați** | Adăugare angajați, salariu brut cu istoric de măriri, calcul automat al netului și al costului pentru firmă, stat de plată lunar |
+| **Angajați** | Adăugare angajați, salariu brut cu istoric de măriri, calcul automat al netului și al costului pentru firmă, stat de plată lunar cu zile lucrătoare (sărbătorile legale incluse), concedii de odihnă/medicale/fără plată, zile de concediu rămase, normă parțială și avertizare sub salariul minim |
 | **Taxe** | Decontul de TVA (colectată − deductibilă = de plată), CAS, CASS, impozit pe venit, CAM și impozitul pe profit, explicate pe înțeles, cu cotele valabile în luna aleasă |
-| **Rapoarte** | Contul de profit și pierdere în structura raportului contabil, indicatori de control, export Excel (cu foi pentru vânzări, achiziții, cheltuieli, stocuri, salarii) și PDF |
-| **Setări** | Firma, proprietarul, regimul de impozitare, plătitor de TVA, legislația fiscală (cu istoric), import din Excel/CSV, parola |
+| **Calendar fiscal** | Termenele ANAF cu sume: D112 (salarii), D300 (TVA), D394, impozitul pe profit trimestrial și D101; termenele din weekend/sărbători mutate automat; bifă „Am plătit”; Testi amintește cu 7 zile înainte |
+| **Rapoarte** | Contul de profit și pierdere în structura raportului contabil, indicatori de control, export Excel (cu foi pentru vânzări, achiziții, cheltuieli, stocuri, salarii) și PDF; **închiderea lunii** (cu listă de verificări) și **jurnalul de modificări** |
+| **Setări** | Firma, proprietarul, regimul de impozitare, plătitor de TVA, ziua salariilor, pierderea fiscală de recuperat, legislația fiscală (cu istoric), import din Excel/CSV, parola, **copii de siguranță** |
 
 În plus:
 
@@ -43,6 +56,17 @@ schimbă Codul fiscal.
   să comand?”). Răspunsurile vin de la modelul Claude (`claude-opus-5-5`), pe baza unui rezumat al
   datelor firmei trimis la fiecare întrebare. Fără cheie, opțiunea nu apare și aplicația rămâne
   complet locală. Vedeți secțiunea „Asistentul AI” de mai jos.
+- **Retururi și reduceri:** la vânzări, butonul de retur emite o factură de stornare (cu minus),
+  totală sau parțială, legată de factura inițială; marfa revine în stoc, iar venitul, TVA și
+  profitul scad. Facturile pe produse pot avea reducere în procente.
+- **Obiective lunare:** vânzări și profit țintă (în fiecare lună sau doar pentru o lună anume);
+  dashboard-ul arată cât s-a atins și unde se ajunge la final de lună, în ritmul de până acum.
+- **Copii de siguranță:** automat în fiecare zi (se păstrează ultimele 30), la închiderea lunii și
+  înainte de orice restaurare; **export complet** (ZIP cu baza de date și toate datele în Excel) din
+  care se poate restaura totul, de exemplu pe alt calculator.
+- **Închiderea lunii:** după trimiterea raportului la contabil, luna se închide și nimic din ea nu
+  mai poate fi modificat (nici din import); se poate redeschide, iar totul apare în jurnal.
+- **Jurnal de modificări:** fiecare adăugare, modificare sau ștergere, cu valoarea veche și cea nouă.
 - **Adăugare rapidă:** butonul „+ Adaugă” din colț, pentru o vânzare sau o cheltuială din câteva atingeri.
 - **Versiune de telefon:** interfața se adaptează la ecranul mic, are meniu jos și se poate
   instala ca aplicație (vezi mai jos).
@@ -92,7 +116,9 @@ datele din T3 2026 primite de la firmă.
 din meniul browserului alegeți „Adaugă pe ecranul principal”. Instalarea completă ca aplicație
 (cu funcționare offline) cere o adresă HTTPS; pe calculatorul local (`localhost`) merge direct.
 
-Datele se salvează în `data/testify.db`. Pentru o copie de siguranță, copiați acest fișier.
+Datele se salvează în `data/testify.db` (la programul Windows, în `TestifyData`). Aplicația face
+singură o copie în fiecare zi în `data/backups`; din **Setări → Copii de siguranță** se poate
+descărca exportul complet, de păstrat pe un stick sau în cloud.
 
 ## Actualizarea automată a regulilor fiscale
 
@@ -164,8 +190,18 @@ internet plus răspunsul modelului `claude-opus-5-5`).
 - **Profit înainte de impozit** = marja brută − cheltuieli − salarii brute − CAM.
 - **TVA de plată** = TVA din vânzări − TVA din achizițiile de marfă − TVA din cheltuieli
   (cote standard, redusă sau scutit, după tipul cheltuielii).
-- **Impozit pe profit:** 16% din profitul înainte de impozit. Într-o lună pe pierdere nu se
-  plătește. (Din Setări se poate trece pe regimul de microîntreprindere: 1% din venituri.)
+- **Impozit pe profit:** în rapoartele lunare, 16% din profitul lunii, ca la contabil. În
+  **Calendarul fiscal** apare suma care se plătește efectiv, trimestrial: 16% din profitul cumulat
+  de la începutul anului, minus ce s-a plătit în trimestrele anterioare; pierderile fiscale din anii
+  trecuți se recuperează din cel mult 70% din profit. (Din Setări se poate trece pe regimul de
+  microîntreprindere: 1% din venituri.)
+- **Salariul minim** vine tot din regulile fiscale (4.050 lei, apoi 4.325 lei de la 1 iulie 2026),
+  proporțional cu norma. Concediul fără plată scade brutul proporțional cu zilele lucrătoare lipsă.
+- **Trezorerie:** totul cu TVA, pentru că asta se mișcă în cont; vânzările plătite pe loc și
+  cheltuielile obișnuite se estimează din media ultimelor luni.
+- **Termene:** pe 25 ale lunii următoare (D112, D300), pe 30 (D394); impozitul pe profit pe 25 ale
+  lunii de după trimestru, iar trimestrul IV până pe 25 iunie, cu D101. Un termen care pică în
+  weekend sau de sărbători se mută în prima zi lucrătoare.
 - **Profit net** = profit înainte de impozit − impozit pe profit.
 - **Îți rămâne ție** = profit net − impozitul pe dividende (16% din 2026).
 - **Creanțe:** o factură către un client cu termen de plată rămâne „de încasat” până o marcați
@@ -176,9 +212,9 @@ internet plus răspunsul modelului `claude-opus-5-5`).
   sub el, alerta apare în aplicație: la Testi, pe dashboard, la emiterea facturii și în pagina Stoc.
 - La luna în curs, comparația se face cu aceeași perioadă din luna trecută.
 
-Calculul e o estimare lunară, pentru imaginea de ansamblu: nu ține cont de deducerea personală,
-de facilitățile fiscale sau de recuperarea pierderilor din lunile anterioare la impozitul pe
-profit (care legal se declară trimestrial). Cifrele oficiale rămân cele ale contabilului.
+Calculul e o estimare de gestiune, pentru imaginea de ansamblu: nu ține cont de deducerea
+personală, de suma scutită de taxe la salariul minim, de indemnizația exactă de concediu medical,
+de cheltuielile nedeductibile sau de facilitățile fiscale. Cifrele oficiale rămân cele ale contabilului.
 
 ## Tehnic
 
@@ -186,4 +222,6 @@ profit (care legal se declară trimestrial). Cifrele oficiale rămân cele ale c
 - **Interfață:** HTML, CSS și JavaScript simplu, cu grafice Chart.js (inclus local, merge și fără internet)
 - **Telefon:** manifest de aplicație web și service worker (`app/static/manifest.webmanifest`, `sw.js`)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Teste:** `pip install -r requirements.txt && pytest`
+- **Teste:** `pip install -r requirements.txt && pytest` (rulează automat pe GitHub la fiecare modificare)
+- **Program Windows:** `pyinstaller testify.spec` (construit automat pe GitHub, pe un calculator Windows)
+- **Siguranță:** jurnalul și închiderea lunii sunt triggere SQLite, deci se aplică oricum ar veni modificarea
