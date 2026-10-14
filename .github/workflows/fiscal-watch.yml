@@ -1,0 +1,55 @@
+# Verificare automată a Codului fiscal.
+# În fiecare luni dimineață, Claude caută modificări ale cotelor (TVA, impozite, contribuții).
+# Dacă găsește ceva adoptat oficial, deschide o propunere de modificare (pull request) pentru
+# app/fiscal/ro.json. După ce un om o verifică și o acceptă, aplicațiile se actualizează singure.
+#
+# Necesită secretul ANTHROPIC_API_KEY (Settings → Secrets and variables → Actions) și permisiunea
+# „Allow GitHub Actions to create and approve pull requests” (Settings → Actions → General).
+name: Verificare Cod fiscal
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # lunea, 06:17 UTC (09:17 ora României vara)
+  workflow_dispatch:        # se poate porni și manual, din tabul Actions
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: fiscal-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalează dependențele
+        run: pip install -r requirements.txt
+
+      - name: Caută modificări în Codul fiscal
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/fiscal_watch.py
+
+      - name: Verifică regulile propuse cu testele aplicației
+        if: hashFiles('fiscal_update.md') != ''
+        run: python -m pytest -q
+
+      - name: Deschide propunerea de modificare
+        if: hashFiles('fiscal_update.md') != ''
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: fiscal-update
+          delete-branch: true
+          add-paths: app/fiscal/ro.json
+          commit-message: "Actualizare reguli fiscale (propunere automată)"
+          title: "Modificări în Codul fiscal: verificați și acceptați"
+          body-path: fiscal_update.md

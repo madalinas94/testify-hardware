@@ -1,8 +1,8 @@
 {
   "country": "RO",
-  "version": "2026.2",
+  "version": "2026.3",
   "published": "2026-10-14",
-  "source": "Codul fiscal (Legea 227/2015) cu modificările ulterioare, inclusiv Legea 141/2025",
+  "source": "Codul fiscal (Legea 227/2015) cu modificările ulterioare (legi și ordonanțe de urgență). Verificați actul normativ pe legislatie.just.ro.",
   "rules": [
     {
       "effective_from": "2025-01-01",
@@ -19,7 +19,8 @@
         "vat_reduced_rate": 9
       },
       "changes": [
-        "Impozitul pe dividende a crescut de la 8% la 10%."
+        "Impozitul pe dividende a crescut de la 8% la 10%.",
+        "Microîntreprinderile plăteau 1% sau 3% din venituri, în funcție de activitate și de nivelul veniturilor (aplicația folosește 1% doar pentru regimul micro)."
       ]
     },
     {
@@ -57,7 +58,7 @@
       },
       "changes": [
         "Impozitul pe dividende crește de la 10% la 16%. Din profitul pe care îl scoateți din firmă vă rămâne mai puțin.",
-        "Microîntreprinderile au o singură cotă de 1%, iar plafonul scade la 100.000 euro venituri pe an.",
+        "Microîntreprinderile au o singură cotă de 1%, cu un plafon de venituri mai mic (100.000 euro pe an). Verificați condițiile exacte cu contabilul.",
         "Impozitul pe profit rămâne 16%, iar contribuțiile pe salarii (CAS 25%, CASS 10%, impozit 10%, CAM 2,25%) nu se schimbă."
       ]
     }

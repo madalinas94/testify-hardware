@@ -131,6 +131,30 @@ funcționează la fel.
   recomandat de Anthropic (`fallbacks: "default"`).
 - **Teste:** `tests/test_ai.py` folosește un client simulat, deci rulează fără cheie și fără cost.
 
+## Verificarea automată a Codului fiscal
+
+În fiecare **luni dimineață**, o sarcină programată pe GitHub (`.github/workflows/fiscal-watch.yml`)
+rulează `scripts/fiscal_watch.py`:
+
+1. Claude caută pe internet modificări adoptate ale cotelor folosite de aplicație (TVA, impozit pe
+   profit, dividende, micro, CAS, CASS, impozit pe venit, CAM), din surse oficiale.
+2. Rezultatul e transformat în reguli JSON stricte și validat de aplicație (toate cotele, între 0 și 100).
+3. Dacă există ceva nou, GitHub deschide o **propunere de modificare (pull request)** cu regula,
+   explicațiile pentru Robert și linkurile la surse. Proprietarul repository-ului primește email.
+4. Un om verifică sursele și apasă **Merge**. În cel mult 6 ore, toate aplicațiile se actualizează.
+
+Nimic nu se aplică fără aprobare. Propunerile, proiectele și zvonurile neadoptate sunt ignorate.
+
+**Configurare (o singură dată):**
+- **Settings → Secrets and variables → Actions → New repository secret:** numele
+  `ANTHROPIC_API_KEY`, valoarea cheia API Anthropic. Cheia nu se pune niciodată în cod.
+- **Settings → Actions → General → Workflow permissions:** bifați „Allow GitHub Actions to create
+  and approve pull requests”.
+- Pentru o verificare imediată: tabul **Actions → Verificare Cod fiscal → Run workflow**.
+
+O verificare costă câțiva cenți până la câteva zeci de cenți din contul Anthropic (căutări pe
+internet plus răspunsul modelului `claude-opus-5-5`).
+
 ## Cum se calculează
 
 - **Salariu:** CAS 25% și CASS 10% din brut; impozit pe venit 10% din (brut − CAS − CASS);
