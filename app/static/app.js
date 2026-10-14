@@ -1929,23 +1929,27 @@ function wireImport(view) {
 
 /* ================= Asistentul Testi ================= */
 
+// Fiecare robot desenat are id-uri proprii pentru gradienți: dacă două desene ar folosi aceleași
+// id-uri, cel din panoul ascuns ar lăsa butonul fără culori.
+let robotCount = 0;
 function robotSVG(className = "") {
+  const id = `rb${++robotCount}`;
   return `<svg class="robot ${className}" viewBox="0 0 120 120" aria-hidden="true">
     <defs>
-      <linearGradient id="rb-body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1e293b"/><stop offset="1" stop-color="#0b1222"/></linearGradient>
-      <linearGradient id="rb-edge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#3b82f6"/></linearGradient>
-      <radialGradient id="rb-eye"><stop offset="0" stop-color="#ecfeff"/><stop offset=".45" stop-color="#22d3ee"/><stop offset="1" stop-color="#0891b2" stop-opacity="0"/></radialGradient>
+      <linearGradient id="${id}-body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1e293b"/><stop offset="1" stop-color="#0b1222"/></linearGradient>
+      <linearGradient id="${id}-edge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#3b82f6"/></linearGradient>
+      <radialGradient id="${id}-eye"><stop offset="0" stop-color="#ecfeff"/><stop offset=".45" stop-color="#22d3ee"/><stop offset="1" stop-color="#0891b2" stop-opacity="0"/></radialGradient>
     </defs>
-    <g class="rb-antenna"><line x1="60" y1="14" x2="60" y2="26" stroke="url(#rb-edge)" stroke-width="3"/><circle class="rb-light" cx="60" cy="11" r="5" fill="#fbbf24"/></g>
-    <rect x="24" y="26" width="72" height="54" rx="20" fill="url(#rb-body)" stroke="url(#rb-edge)" stroke-width="3"/>
+    <g class="rb-antenna"><line x1="60" y1="14" x2="60" y2="26" stroke="url(#${id}-edge)" stroke-width="3"/><circle class="rb-light" cx="60" cy="11" r="5" fill="#fbbf24"/></g>
+    <rect x="24" y="26" width="72" height="54" rx="20" fill="url(#${id}-body)" stroke="url(#${id}-edge)" stroke-width="3"/>
     <rect x="33" y="37" width="54" height="30" rx="13" fill="#020617"/>
-    <g class="rb-eyes"><circle cx="48" cy="52" r="7" fill="url(#rb-eye)"/><circle cx="72" cy="52" r="7" fill="url(#rb-eye)"/></g>
+    <g class="rb-eyes"><circle cx="48" cy="52" r="7" fill="url(#${id}-eye)"/><circle cx="72" cy="52" r="7" fill="url(#${id}-eye)"/></g>
     <path class="rb-mouth" d="M52 61 q8 5 16 0" stroke="#22d3ee" stroke-width="2.5" fill="none" stroke-linecap="round"/>
     <rect x="18" y="45" width="6" height="16" rx="3" fill="#22d3ee"/><rect x="96" y="45" width="6" height="16" rx="3" fill="#22d3ee"/>
-    <rect x="40" y="82" width="40" height="26" rx="10" fill="url(#rb-body)" stroke="url(#rb-edge)" stroke-width="3"/>
+    <rect x="40" y="82" width="40" height="26" rx="10" fill="url(#${id}-body)" stroke="url(#${id}-edge)" stroke-width="3"/>
     <circle cx="60" cy="95" r="4" fill="#fbbf24"/>
-    <g class="rb-arm"><path d="M80 88 q16 -4 20 -20" stroke="url(#rb-edge)" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="100" cy="66" r="5" fill="#22d3ee"/></g>
-    <path d="M40 90 q-12 4 -14 16" stroke="url(#rb-edge)" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <g class="rb-arm"><path d="M80 88 q16 -4 20 -20" stroke="url(#${id}-edge)" stroke-width="5" fill="none" stroke-linecap="round"/><circle cx="100" cy="66" r="5" fill="#22d3ee"/></g>
+    <path d="M40 90 q-12 4 -14 16" stroke="url(#${id}-edge)" stroke-width="5" fill="none" stroke-linecap="round"/>
   </svg>`;
 }
 
