@@ -101,10 +101,73 @@ def create_session(conn: sqlite3.Connection) -> str:
     return token
 
 
-def is_valid_session(conn: sqlite3.Connection, token: str | None) -> bool:
+def idle_limit_minutes(conn: sqlite3.Connection) -> int:
+    try:
+        return max(int(get_settings(conn).get("idle_lock_minutes") or 0), 0)
+    except ValueError:
+        return 0
+
+
+def is_valid_session(conn: sqlite3.Connection, token: str | None, touch: bool = True) -> bool:
+    """Sesiune validă și folosită recent: după inactivitate (implicit 15 minute) aplicația se blochează."""
     if not token:
         return False
-    return conn.execute("SELECT 1 FROM sessions WHERE token = ?", (token,)).fetchone() is not None
+    row = conn.execute("SELECT (julianday('now') - julianday(COALESCE(last_seen, created_at))) * 1440 AS idle "
+                       "FROM sessions WHERE token = ?", (token,)).fetchone()
+    if row is None:
+        return False
+    limit = idle_limit_minutes(conn)
+    if limit and row["idle"] > limit:
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        return False
+    if touch:
+        conn.execute("UPDATE sessions SET last_seen = datetime('now') WHERE token = ?", (token,))
+    return True
+
+
+# ---------- PIN rapid (de exemplu pe telefon) ----------
+# Un PIN e mai scurt decât parola, deci e mai strict păzit: după 3 încercări greșite se dezactivează
+# până la următoarea intrare cu parola.
+PIN_MAX_FAILURES = 3
+
+
+def has_pin(conn: sqlite3.Connection) -> bool:
+    settings = get_settings(conn)
+    return bool(settings.get("pin_hash")) and settings.get("pin_locked") != "1"
+
+
+def set_pin(conn: sqlite3.Connection, pin: str) -> None:
+    salt = secrets.token_hex(16)
+    set_setting(conn, "pin_salt", salt)
+    set_setting(conn, "pin_hash", hash_password(pin, salt))
+    set_setting(conn, "pin_failures", "0")
+    set_setting(conn, "pin_locked", "0")
+
+
+def clear_pin(conn: sqlite3.Connection) -> None:
+    for key in ("pin_salt", "pin_hash", "pin_failures", "pin_locked"):
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+
+def check_pin(conn: sqlite3.Connection, pin: str) -> bool:
+    settings = get_settings(conn)
+    if not has_pin(conn):
+        return False
+    if hmac.compare_digest(hash_password(pin, settings["pin_salt"]), settings["pin_hash"]):
+        set_setting(conn, "pin_failures", "0")
+        return True
+    failures = int(settings.get("pin_failures") or 0) + 1
+    set_setting(conn, "pin_failures", str(failures))
+    if failures >= PIN_MAX_FAILURES:
+        set_setting(conn, "pin_locked", "1")
+    return False
+
+
+def unlock_pin(conn: sqlite3.Connection) -> None:
+    """După o intrare cu parola, PIN-ul blocat redevine activ."""
+    if get_settings(conn).get("pin_hash"):
+        set_setting(conn, "pin_failures", "0")
+        set_setting(conn, "pin_locked", "0")
 
 
 def require_login(testify_session: str | None = Cookie(default=None)) -> None:

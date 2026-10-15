@@ -42,6 +42,7 @@ your PC”, pentru că programul nu e semnat digital: apăsați **More info → 
 | **Cheltuieli** | 19 categorii implicite, editabile: marfă, chirie, utilități, internet și telefonie, transport, combustibil, contabilitate, marketing, software, echipamente, comisioane bancare/POS, asigurări, reparații, ambalaje, taxe locale, SSM, training, protocol, altele |
 | **Angajați** | Adăugare angajați, salariu brut cu istoric de măriri, calcul automat al netului și al costului pentru firmă, stat de plată lunar cu zile lucrătoare (sărbătorile legale incluse), concedii de odihnă/medicale/fără plată, zile de concediu rămase, normă parțială și avertizare sub salariul minim |
 | **Taxe** | Decontul de TVA (colectată − deductibilă = de plată), CAS, CASS, impozit pe venit, CAM și impozitul pe profit, explicate pe înțeles, cu cotele valabile în luna aleasă |
+| **Decizii** | **Simulatorul „Ce-ar fi dacă…”**: cursoare pentru prețuri, cantități, prețurile furnizorilor, măriri, angajați noi și cheltuieli în plus; profitul, impozitul, pragul de rentabilitate și „cât îți rămâne” se recalculează pe loc. **Analiza clienților și produselor**: cine aduce 80% din profit (clase A/B/C), clienți fideli care nu mai cumpără, marfă care stă și blochează bani |
 | **Calendar fiscal** | Termenele ANAF cu sume: D112 (salarii), D300 (TVA), D394, impozitul pe profit trimestrial și D101; termenele din weekend/sărbători mutate automat; bifă „Am plătit”; Testi amintește cu 7 zile înainte |
 | **Rapoarte** | Contul de profit și pierdere în structura raportului contabil, indicatori de control, export Excel (cu foi pentru vânzări, achiziții, cheltuieli, stocuri, salarii) și PDF; **închiderea lunii** (cu listă de verificări) și **jurnalul de modificări** |
 | **Setări** | Firma, proprietarul, regimul de impozitare, plătitor de TVA, ziua salariilor, pierderea fiscală de recuperat, legislația fiscală (cu istoric), import din Excel/CSV, parola, **copii de siguranță** |
@@ -56,6 +57,19 @@ your PC”, pentru că programul nu e semnat digital: apăsați **More info → 
   să comand?”). Răspunsurile vin de la modelul Claude (`claude-opus-5-5`), pe baza unui rezumat al
   datelor firmei trimis la fiecare întrebare. Fără cheie, opțiunea nu apare și aplicația rămâne
   complet locală. Vedeți secțiunea „Asistentul AI” de mai jos.
+- **Poză la bon:** la Cheltuieli, „Citește bonul”: fotografiați bonul sau factura (sau alegeți un PDF), iar
+  Testi (cu AI) citește furnizorul, data, suma, TVA și propune categoria. Robert verifică și salvează.
+- **Import e-Factura (SPV):** din Setări, fișierele XML sau arhivele ZIP descărcate din Spațiul Privat
+  Virtual ANAF. Liniile cu marfă devin recepții în stoc (produsul se recunoaște după cod sau nume), restul
+  devin cheltuieli cu categoria propusă. Notele de credit scad cheltuielile. Aceeași factură nu intră de două ori.
+- **Comenzi recomandate:** la Stoc, ce trebuie comandat, cât, de la cine și până când, după ritmul
+  vânzărilor, termenul de livrare al furnizorului și banii din cont; comanda se copiază pentru email/WhatsApp.
+- **Scrisoarea lunii:** la Rapoarte, un PDF cu grafice și explicații pe înțeles (ce a mers bine, la ce să
+  fii atent, ce urmează), bun de trimis partenerilor sau băncii.
+- **Testi vorbește:** butonul cu difuzor din fereastra lui Testi citește mesajele cu voce, în română.
+- **Siguranță:** blocare automată după 15 minute fără activitate (configurabil), PIN de intrare rapidă pe
+  telefon (după 3 greșeli se cere parola) și o copie zilnică în plus într-un folder ales (de exemplu
+  sincronizat cu Google Drive / OneDrive).
 - **Retururi și reduceri:** la vânzări, butonul de retur emite o factură de stornare (cu minus),
   totală sau parțială, legată de factura inițială; marfa revine în stoc, iar venitul, TVA și
   profitul scad. Facturile pe produse pot avea reducere în procente.
@@ -222,6 +236,8 @@ de cheltuielile nedeductibile sau de facilitățile fiscale. Cifrele oficiale r�
 - **Interfață:** HTML, CSS și JavaScript simplu, cu grafice Chart.js (inclus local, merge și fără internet)
 - **Telefon:** manifest de aplicație web și service worker (`app/static/manifest.webmanifest`, `sw.js`)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Teste:** `pip install -r requirements.txt && pytest` (rulează automat pe GitHub la fiecare modificare)
+- **Teste:** `pip install -r requirements.txt && pytest` (rulează automat pe GitHub la fiecare modificare),
+  inclusiv un test de performanță cu 5 ani de date și teste de interfață în care un browser real apasă
+  butoanele (`tests/e2e`, cu Playwright)
 - **Program Windows:** `pyinstaller testify.spec` (construit automat pe GitHub, pe un calculator Windows)
 - **Siguranță:** jurnalul și închiderea lunii sunt triggere SQLite, deci se aplică oricum ar veni modificarea

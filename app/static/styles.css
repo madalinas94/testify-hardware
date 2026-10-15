@@ -647,3 +647,62 @@ button.tag:hover { filter: brightness(1.25); }
   .audit time { grid-column: 2; }
 }
 .events-list { max-height: 560px; overflow-y: auto; }
+
+/* ---------- Runda 2: decizii, comenzi, bonuri, e-Factura, siguranță ---------- */
+.segmented button svg { width: 15px; height: 15px; vertical-align: -3px; margin-right: 4px; }
+.sim-grid { grid-template-columns: minmax(300px, 420px) 1fr; align-items: start; }
+.sim-controls { display: grid; gap: 14px; }
+.sim-slider { display: grid; gap: 6px; }
+.sim-label { display: flex; justify-content: space-between; font-size: 14px; font-weight: 600; }
+.sim-label b { color: var(--cyan); font-variant-numeric: tabular-nums; }
+.sim-slider small { color: var(--muted); font-size: 12px; }
+.sim-slider input[type=range] { width: 100%; accent-color: var(--cyan); height: 22px; }
+.sim-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; }
+.sim-presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-btn { border: 1px solid var(--border-strong); background: rgba(34, 211, 238, .06); color: var(--text); border-radius: 999px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; transition: background .15s, border-color .15s; }
+.chip-btn:hover { background: rgba(34, 211, 238, .16); border-color: var(--cyan); }
+.chip-btn.ghost { background: transparent; color: var(--muted); }
+.chip-btn svg { width: 13px; height: 13px; }
+.sim-bigs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+.sim-big { padding: 14px 16px; border-radius: 14px; background: rgba(7, 11, 20, .45); border: 1px solid var(--border); display: grid; gap: 2px; }
+.sim-big span { color: var(--muted); font-size: 13px; }
+.sim-big strong { font-size: 28px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.sim-big small { font-size: 12.5px; font-weight: 600; }
+.sim-year { margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; font-size: 14px; }
+.sim-year.good { background: rgba(52, 211, 153, .1); color: var(--green); }
+.sim-year.bad { background: rgba(248, 113, 113, .1); color: var(--red); }
+.tag.abc { min-width: 24px; justify-content: center; }
+.tag.abc-A { background: rgba(34, 211, 238, .16); color: var(--cyan); }
+.tag.abc-B { background: rgba(167, 139, 250, .16); color: var(--violet); }
+.stat-mini { text-align: right; display: grid; }
+.stat-mini span { color: var(--muted); font-size: 12px; }
+.stat-mini b { font-size: 20px; }
+.stat-mini small { color: var(--muted); font-size: 12px; }
+.reorder-group .card-head h2 .tag { margin-left: 6px; vertical-align: 2px; }
+.scan-btn { cursor: pointer; }
+.receipt-box { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; margin-bottom: 14px; font-size: 13.5px; border: 1px solid var(--border); }
+.receipt-box > svg { width: 18px; height: 18px; margin-top: 2px; }
+.receipt-box .robot { width: 34px; height: 34px; }
+.receipt-box.reading { border-color: rgba(34, 211, 238, .35); background: rgba(34, 211, 238, .06); animation: pulse-border 1.4s infinite; }
+.receipt-box.good { border-color: rgba(52, 211, 153, .35); background: rgba(52, 211, 153, .07); }
+.receipt-box.good > svg { color: var(--green); }
+.receipt-box.warn { border-color: rgba(251, 191, 36, .35); background: rgba(251, 191, 36, .07); }
+.receipt-box.warn > svg { color: var(--gold); }
+@keyframes pulse-border { 50% { border-color: rgba(34, 211, 238, .8); } }
+.drop { display: flex; gap: 14px; align-items: center; padding: 18px; border-radius: 14px; border: 1.5px dashed var(--border-strong); cursor: pointer; transition: border-color .15s, background .15s; }
+.drop:hover, .drop.over { border-color: var(--cyan); background: rgba(34, 211, 238, .06); }
+.drop svg { width: 26px; height: 26px; color: var(--cyan); }
+.efactura-list { display: grid; gap: 14px; max-height: 60vh; overflow-y: auto; }
+.efactura-inv { border: 1px solid var(--border); border-radius: 14px; padding: 12px; }
+.efactura-inv.dup { opacity: .55; }
+.efactura-inv header { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; margin-bottom: 8px; font-size: 14px; }
+.efactura-inv header .r { margin-left: auto; font-weight: 700; }
+.efactura-target { display: grid; gap: 6px; min-width: 190px; }
+.efactura-target select { background: var(--panel-solid); border: 1px solid var(--border); border-radius: 9px; padding: 6px 8px; font-size: 13px; max-width: 260px; }
+.pin-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+#assistant-voice.on { color: var(--cyan); background: rgba(34, 211, 238, .14); }
+.letter-card { width: 100%; border-color: rgba(251, 191, 36, .3); }
+@media (max-width: 1000px) { .sim-grid { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .sim-bigs { grid-template-columns: 1fr; } .sim-big strong { font-size: 24px; } .sim-row { grid-template-columns: 1fr; } }
+/* Tabelul lipit de marginea de jos doar când e ultimul în card; altfel, nu acoperă ce urmează. */
+.table-wrap:not(:last-child) { margin-bottom: 12px; }

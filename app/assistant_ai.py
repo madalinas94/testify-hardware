@@ -6,6 +6,7 @@ La fiecare întrebare, aplicația trimite modelului Claude un rezumat al datelor
 aplicația rămâne complet locală, iar Testi folosește doar regulile lui obișnuite.
 """
 
+import base64
 import json
 import os
 import sqlite3
@@ -159,20 +160,34 @@ def ask(conn: sqlite3.Connection, messages: list[dict]) -> dict:
         raise AIError("Asistentul AI nu este activat. Îl puteți porni din Setări.", 400)
     history = clean_history(messages)
     snapshot = json.dumps(business_snapshot(conn), ensure_ascii=False, separators=(",", ":"))
-    client = make_client(conn)
+    response = call_claude(
+        make_client(conn),
+        output_config={"effort": "medium"},
+        # Instrucțiunile fixe primele (se pot reține în cache), datele firmei după ele.
+        system=[
+            {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": f"Datele firmei (JSON, sume în lei):\n{snapshot}"},
+        ],
+        messages=history,
+    )
+    if response.stop_reason == "refusal":
+        return {"reply": "Nu pot răspunde la această întrebare. Încearcă să o formulezi altfel, "
+                         "legat de cifrele firmei.", "model": response.model}
+    text = "\n".join(block.text for block in response.content if block.type == "text").strip()
+    if not text:
+        raise AIError("Nu am primit un răspuns. Încercați din nou.")
+    return {"reply": text, "model": response.model}
+
+
+def call_claude(client: anthropic.Anthropic, **params):
+    """Un apel la Claude, cu erorile traduse pe înțeles pentru proprietar."""
     try:
-        response = client.beta.messages.create(
+        return client.beta.messages.create(
             model=AI_MODEL,
             max_tokens=16000,
             betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",  # dacă modelul refuză o întrebare, o preia automat modelul de rezervă
-            output_config={"effort": "medium"},
-            # Instrucțiunile fixe primele (se pot reține în cache), datele firmei după ele.
-            system=[
-                {"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": f"Datele firmei (JSON, sume în lei):\n{snapshot}"},
-            ],
-            messages=history,
+            fallbacks="default",  # dacă modelul refuză, o preia automat modelul de rezervă
+            **params,
         )
     except anthropic.AuthenticationError:
         raise AIError("Cheia API nu este validă. Verificați-o în Setări.", 400)
@@ -185,10 +200,75 @@ def ask(conn: sqlite3.Connection, messages: list[dict]) -> dict:
     except anthropic.APIStatusError as error:
         raise AIError(f"Serviciul AI a răspuns cu o eroare ({error.status_code}). Încercați mai târziu.")
 
+
+RECEIPT_PROMPT = """Aceasta este o factură sau un bon fiscal primit de o firmă din România (plătitoare de \
+TVA). Extrage datele pentru a înregistra cheltuiala. Reguli:
+- date: data documentului (AAAA-LL-ZZ). Dacă nu se vede, pune un șir gol.
+- supplier: numele firmei care a emis documentul (ex. „OMV Petrom SA”), fără CUI.
+- document_number: numărul facturii sau al bonului, dacă se vede.
+- total: totalul de plată, CU TVA, în lei. net: suma fără TVA. vat: TVA total. Dacă documentul are \
+mai multe cote, adună-le. Dacă nu se vede TVA separat, calculează-l din cotă.
+- vat_kind: „standard” (21%, sau 19% pe documente mai vechi de august 2025), „reduced” (11%, 9% sau 5%) \
+sau „none” (fără TVA: taxe, asigurări, comisioane bancare). La cote mixte, alege cota cu suma cea mai mare.
+- category: alege EXACT una din categoriile: {categories}.
+- description: 2–6 cuvinte despre ce s-a cumpărat (ex. „Motorină 45 litri”).
+- confidence: „high” dacă documentul e clar, „medium” dacă ai ghicit ceva, „low” dacă nu e lizibil.
+- notes: ce n-ai putut citi sau ce ar trebui verificat; șir gol dacă totul e clar.
+Nu inventa: ce nu se vede rămâne gol (sau 0 la sume) și scrii în notes."""
+
+
+def receipt_schema(categories: list[str]) -> dict:
+    text = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": {
+            "date": text, "supplier": text, "document_number": text,
+            "total": {"type": "number"}, "net": {"type": "number"}, "vat": {"type": "number"},
+            "vat_kind": {"type": "string", "enum": ["standard", "reduced", "none"]},
+            "category": {"type": "string", "enum": categories},
+            "description": text,
+            "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+            "notes": text,
+        },
+        "required": ["date", "supplier", "document_number", "total", "net", "vat", "vat_kind", "category",
+                     "description", "confidence", "notes"],
+        "additionalProperties": False,
+    }
+
+
+RECEIPT_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif", "application/pdf"}
+
+
+def read_receipt(conn: sqlite3.Connection, content: bytes, media_type: str) -> dict:
+    """Citește un bon sau o factură (poză sau PDF) și propune cheltuiala completată."""
+    if not status(conn)["enabled"]:
+        raise AIError("Pentru citirea bonurilor, porniți Testi cu AI din Setări.", 400)
+    if media_type not in RECEIPT_TYPES:
+        raise AIError("Trimiteți o poză (JPG, PNG) sau un PDF.", 400)
+    categories = [row["name"] for row in conn.execute("SELECT name FROM categories ORDER BY id")]
+    data = base64.standard_b64encode(content).decode("utf-8")
+    block = ({"type": "document", "source": {"type": "base64", "media_type": media_type, "data": data}}
+             if media_type == "application/pdf" else
+             {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}})
+    response = call_claude(
+        make_client(conn),
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": receipt_schema(categories)}},
+        messages=[{"role": "user", "content": [
+            block, {"type": "text", "text": RECEIPT_PROMPT.format(categories=", ".join(categories))}]}],
+    )
     if response.stop_reason == "refusal":
-        return {"reply": "Nu pot răspunde la această întrebare. Încearcă să o formulezi altfel, "
-                         "legat de cifrele firmei.", "model": response.model}
-    text = "\n".join(block.text for block in response.content if block.type == "text").strip()
-    if not text:
-        raise AIError("Nu am primit un răspuns. Încercați din nou.")
-    return {"reply": text, "model": response.model}
+        raise AIError("Nu am putut citi documentul. Completați cheltuiala manual.", 422)
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    try:
+        result = json.loads(text)
+    except ValueError:
+        raise AIError("Nu am putut citi documentul. Încercați o poză mai clară.", 422)
+    # Verificări simple: sumele trebuie să se lege (net + TVA = total).
+    if result["total"] and not result["net"]:
+        result["net"] = round(result["total"] - result["vat"], 2)
+    result["consistent"] = abs(result["net"] + result["vat"] - result["total"]) <= 0.05 * max(result["total"], 1)
+    try:
+        date.fromisoformat(result["date"])
+    except ValueError:
+        result["date"] = ""
+    return result

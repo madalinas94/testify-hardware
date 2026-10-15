@@ -48,7 +48,60 @@ def create_backup(label: str = "") -> dict:
     name = f"testify-{stamp}{'-' + label if label else ''}.db"
     copy_database(backup_dir() / name)
     prune()
+    mirror(backup_dir() / name)
     return describe(backup_dir() / name)
+
+
+def extra_dir() -> Path | None:
+    from .db import get_settings
+
+    conn = connect()
+    try:
+        folder = get_settings(conn).get("backup_extra_dir", "").strip()
+    finally:
+        conn.close()
+    return Path(folder) if folder else None
+
+
+def check_extra_dir(folder: str) -> str:
+    """Folderul suplimentar (de exemplu sincronizat cu Google Drive / OneDrive) trebuie să existe."""
+    folder = folder.strip()
+    if not folder:
+        return ""
+    path = Path(folder).expanduser()
+    if not path.is_dir():
+        raise ValueError("Folderul nu există. Creați-l întâi (de exemplu în Google Drive sau OneDrive).")
+    probe = path / ".testify-test"
+    try:
+        probe.write_text("ok")
+        probe.unlink()
+    except OSError:
+        raise ValueError("Aplicația nu poate scrie în acest folder.") from None
+    return str(path)
+
+
+def mirror(path: Path) -> None:
+    """O copie și în folderul suplimentar; dacă nu merge (stick scos, cloud oprit), se notează și atât."""
+    from .db import set_setting
+
+    folder = extra_dir()
+    if not folder:
+        return
+    status = "ok"
+    try:
+        target = folder / "TestifyBackups"
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target / path.name)
+        for old in sorted(target.glob("testify-*.db"), key=lambda p: p.name, reverse=True)[KEEP:]:
+            old.unlink(missing_ok=True)
+    except OSError as error:
+        status = f"eroare: {error.strerror or error}"
+    conn = connect()
+    try:
+        set_setting(conn, "backup_extra_status", f"{datetime.now():%Y-%m-%d %H:%M} {status}")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def daily_backup() -> dict | None:

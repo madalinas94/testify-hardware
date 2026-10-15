@@ -88,6 +88,9 @@ const ICONS = {
   lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>',
   history: '<path d="M3 3v5h5"/><path d="M3.1 13a9 9 0 102.1-6.6L3 8"/><path d="M12 7v5l3 2"/>',
   shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
+  sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  camera: '<path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/>',
+  mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/>',
   target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
   refresh: '<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0114.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0020.5 15"/>',
 };
@@ -162,8 +165,10 @@ async function boot() {
     if (status.company) $("#brand-name").textContent = status.company;
     state.ownerName = status.owner_name;
     state.hasRecovery = status.has_recovery;
+    state.hasPin = status.has_pin;
+    state.idleMinutes = status.idle_lock_minutes;
     if (status.logged_in) return showApp();
-    authMode = status.setup_done ? "login" : "setup";
+    authMode = !status.setup_done ? "setup" : status.has_pin && isPhone() ? "pin" : "login";
     showAuth();
   } catch (err) {
     toast(err.message, "err");
@@ -175,6 +180,8 @@ const AUTH_TEXT = {
     label: "Parolă nouă", submit: "Creează parola și intră" },
   login: { title: "Bun venit înapoi", subtitle: "Introduceți parola ca să vedeți cifrele firmei.",
     label: "Parolă", submit: "Intră în aplicație", switchTo: "Am uitat parola" },
+  pin: { title: "Bun venit înapoi", subtitle: "Introduceți PIN-ul de intrare rapidă.",
+    label: "PIN", submit: "Intră", switchTo: "Am uitat parola" },
   recover: { title: "Ați uitat parola?", subtitle: "Introduceți codul de recuperare primit când ați creat parola și alegeți o parolă nouă.",
     label: "Parolă nouă", submit: "Schimbă parola și intră", switchTo: "Înapoi la autentificare" },
 };
@@ -185,9 +192,16 @@ function showAuth(expired = false) {
   $("#auth-form").classList.remove("hidden");
   $("#recovery-panel").classList.add("hidden");
   const text = AUTH_TEXT[authMode];
-  const newPassword = authMode !== "login";
+  const newPassword = !["login", "pin"].includes(authMode);
+  const pin = $("#auth-password");
+  pin.inputMode = authMode === "pin" ? "numeric" : "text";
+  pin.minLength = 4;
+  $("#auth-alt").classList.toggle("hidden", !(state.hasPin && ["login", "pin"].includes(authMode)));
+  $("#auth-alt").textContent = authMode === "pin" ? "Intră cu parola" : "Intră cu PIN-ul";
   $("#auth-title").textContent = text.title;
-  $("#auth-subtitle").textContent = expired && authMode === "login" ? "Sesiunea a expirat. Introduceți parola din nou." : text.subtitle;
+  if (expired && state.hasPin && authMode === "login") authMode = "pin";
+  const lockText = authMode === "pin" ? "Aplicația s-a blocat după o perioadă fără activitate. Introduceți PIN-ul." : "Aplicația s-a blocat (sesiunea a expirat). Introduceți parola din nou.";
+  $("#auth-subtitle").textContent = expired && ["login", "pin"].includes(authMode) ? lockText : AUTH_TEXT[authMode].subtitle;
   $("#auth-password-label").textContent = text.label;
   $("#auth-code-wrap").classList.toggle("hidden", authMode !== "recover");
   $("#auth-code").required = authMode === "recover";
@@ -205,6 +219,27 @@ $("#auth-switch").addEventListener("click", () => {
   authMode = authMode === "recover" ? "login" : "recover";
   showAuth();
 });
+$("#auth-alt").addEventListener("click", () => {
+  authMode = authMode === "pin" ? "login" : "pin";
+  showAuth();
+});
+
+const isPhone = () => window.matchMedia("(max-width: 860px)").matches;
+
+// Blocare automată: după X minute fără activitate, aplicația cere din nou parola sau PIN-ul.
+let idleTimer = null;
+function armIdleLock() {
+  clearTimeout(idleTimer);
+  if (!state.idleMinutes || $("#app").classList.contains("hidden")) return;
+  idleTimer = setTimeout(async () => {
+    try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch { /* fără rețea: oricum se blochează */ }
+    robot.close?.();
+    closeModal();
+    authMode = state.hasPin ? "pin" : "login";
+    showAuth(true);
+  }, state.idleMinutes * 60 * 1000);
+}
+["pointerdown", "keydown", "scroll", "touchstart"].forEach((ev) => window.addEventListener(ev, () => armIdleLock(), { passive: true }));
 
 $("#auth-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -212,7 +247,7 @@ $("#auth-form").addEventListener("submit", async (e) => {
   const err = $("#auth-error");
   err.textContent = "";
   try {
-    if (authMode !== "login" && password !== $("#auth-confirm").value) {
+    if (!["login", "pin"].includes(authMode) && password !== $("#auth-confirm").value) {
       err.textContent = "Parolele nu coincid.";
       return;
     }
@@ -222,6 +257,8 @@ $("#auth-form").addEventListener("submit", async (e) => {
       result = await api("/api/auth/setup", { method: "POST", body: { password, demo: $("#auth-demo").checked } });
     } else if (authMode === "recover") {
       result = await api("/api/auth/recover", { method: "POST", body: { code: $("#auth-code").value, password } });
+    } else if (authMode === "pin") {
+      result = await api("/api/auth/pin-login", { method: "POST", body: { pin: password } });
     } else {
       result = await api("/api/auth/login", { method: "POST", body: { password } });
     }
@@ -242,6 +279,7 @@ $("#auth-form").addEventListener("submit", async (e) => {
     showApp();
   } catch (ex) {
     err.textContent = ex.message;
+    if (authMode === "pin" && /parola/.test(ex.message)) { state.hasPin = false; authMode = "login"; showAuth(); err.textContent = ex.message; }
     $("#auth-submit").textContent = AUTH_TEXT[authMode].submit;
   }
 });
@@ -302,6 +340,7 @@ const ROUTES = {
   bani: { label: "Trezorerie", icon: "bank", eyebrow: "Bani în cont", title: "Trezorerie și prognoză", render: renderTreasury, noMonth: true },
   angajati: { label: "Angajați", icon: "team", eyebrow: "Echipa și salariile", title: "Angajați", render: renderEmployees },
   taxe: { label: "Taxe", icon: "taxes", eyebrow: "Ce plătiți statului", title: "Taxe și contribuții", render: renderTaxes },
+  decizii: { label: "Decizii", icon: "sliders", eyebrow: "Ce-ar fi dacă · cine aduce profitul", title: "Decizii", render: renderDecisions, noMonth: true },
   calendar: { label: "Calendar fiscal", icon: "calendar", eyebrow: "Termene ANAF", title: "Calendar fiscal", render: renderCalendar, noMonth: true },
   rapoarte: { label: "Rapoarte", icon: "reports", eyebrow: "Pentru contabilă", title: "Rapoarte și export", render: renderReports },
   setari: { label: "Setări", icon: "settings", eyebrow: "Configurare", title: "Setări", render: renderSettings, noMonth: true },
@@ -315,6 +354,7 @@ function buildNav() {
 function showApp() {
   $("#auth-screen").classList.add("hidden");
   $("#app").classList.remove("hidden");
+  setTimeout(armIdleLock, 0);
   buildNav();
   route();
   robot.init();
@@ -778,6 +818,192 @@ async function renderTreasury(view) {
   });
 }
 
+/* ================= Decizii: simulator și analiză ================= */
+
+let decisionTab = "sim";
+const SIM_DEFAULT = { price_pct: 0, volume_pct: 0, cost_pct: 0, raise_pct: 0, hires: 0, hire_gross: 5000, extra_expenses: 0 };
+let simState = { ...SIM_DEFAULT };
+const SIM_PRESETS = [
+  { label: "Angajez un vânzător (5.000 lei brut)", set: { hires: 1, hire_gross: 5000 } },
+  { label: "Scumpesc cu 5%", set: { price_pct: 5 } },
+  { label: "Furnizorii scumpesc cu 10%", set: { cost_pct: 10 } },
+  { label: "Chiria crește cu 1.000 lei", set: { extra_expenses: 1000 } },
+  { label: "Vând cu 20% mai puțin", set: { volume_pct: -20 } },
+  { label: "Mărire de 10% pentru echipă", set: { raise_pct: 10 } },
+];
+
+async function renderDecisions(view) {
+  view.innerHTML = `
+    <div class="card-head" style="margin-bottom:14px">
+      <div class="segmented" id="decision-tabs">
+        <button type="button" data-tab="sim" class="${decisionTab === "sim" ? "active" : ""}">${icon("sliders")}Ce-ar fi dacă…</button>
+        <button type="button" data-tab="analysis" class="${decisionTab === "analysis" ? "active" : ""}">${icon("users")}Clienți și produse</button>
+      </div>
+    </div>
+    <div id="decision-body"></div>`;
+  $$("#decision-tabs button", view).forEach((b) => b.addEventListener("click", () => { decisionTab = b.dataset.tab; render(); }));
+  if (decisionTab === "sim") await mountSimulator($("#decision-body", view));
+  else await mountAnalysis($("#decision-body", view));
+}
+
+function simSlider(key, label, min, max, step, unit, hint) {
+  return `<label class="sim-slider"><span class="sim-label">${label}<b data-out="${key}"></b></span>
+    <input type="range" name="${key}" min="${min}" max="${max}" step="${step}" value="${simState[key]}" data-unit="${unit}">
+    ${hint ? `<small>${hint}</small>` : ""}</label>`;
+}
+
+async function mountSimulator(root) {
+  const base = shiftMonth(currentMonth(), -1);
+  const months = Array.from({ length: 6 }, (_, i) => shiftMonth(base, -i));
+  if (!simState.month) simState.month = state.month < currentMonth() ? state.month : base;
+  root.innerHTML = `
+    <section class="grid sim-grid">
+      <article class="card glass sim-controls">
+        <div class="card-head"><div><h2>${icon("sliders")} Ce-ar fi dacă…</h2><p>Mutați cursoarele: profitul, taxele și ce vă rămâne se recalculează pe loc, pornind de la o lună reală.</p></div></div>
+        <label class="field"><span>Pornind de la luna</span><select name="month">${months.map((m) => `<option value="${m}" ${m === simState.month ? "selected" : ""}>${monthLabel(m)}</option>`).join("")}</select></label>
+        <div class="sim-presets">${SIM_PRESETS.map((p, i) => `<button type="button" class="chip-btn" data-preset="${i}">${esc(p.label)}</button>`).join("")}
+          <button type="button" class="chip-btn ghost" data-preset="reset">${icon("refresh")}De la zero</button></div>
+        ${simSlider("price_pct", "Prețurile de vânzare", -20, 30, 1, "%", "Toate produsele, aceleași cantități vândute.")}
+        ${simSlider("volume_pct", "Cantitățile vândute", -50, 100, 5, "%", "Mai mulți sau mai puțini clienți / comenzi.")}
+        ${simSlider("cost_pct", "Prețurile furnizorilor", -20, 30, 1, "%", "Cât plătiți pe marfă.")}
+        ${simSlider("raise_pct", "Mărire de salariu pentru echipă", 0, 30, 1, "%", "")}
+        <div class="sim-row">
+          ${simSlider("hires", "Angajați noi", 0, 5, 1, "", "")}
+          <label class="field"><span>Salariu brut / angajat nou</span><input type="number" name="hire_gross" min="1" max="100000" step="50" value="${simState.hire_gross}"></label>
+        </div>
+        <label class="field"><span>Cheltuieli lunare în plus (lei, fără TVA; cu minus = economii)</span><input type="number" name="extra_expenses" step="100" value="${simState.extra_expenses}"></label>
+      </article>
+      <article class="card glass sim-result" id="sim-result"><div class="skeleton" style="height:420px"></div></article>
+    </section>`;
+
+  const fmtOut = (input) => {
+    const v = Number(input.value), unit = input.dataset.unit;
+    return unit === "%" ? `${v > 0 ? "+" : ""}${v}%` : String(v);
+  };
+  const sync = () => $$("input[type=range]", root).forEach((i) => { $(`[data-out="${i.name}"]`, root).textContent = fmtOut(i); });
+  let timer = null, seq = 0;
+  const run = async () => {
+    const mine = ++seq;
+    const body = { month: simState.month, price_pct: +simState.price_pct, volume_pct: +simState.volume_pct, cost_pct: +simState.cost_pct,
+      raise_pct: +simState.raise_pct, new_employees: Array(+simState.hires).fill(+simState.hire_gross || 0).filter((x) => x > 0),
+      extra_expenses: +simState.extra_expenses || 0 };
+    try {
+      const r = await api("/api/simulate", { method: "POST", body });
+      if (mine === seq) drawSimulation($("#sim-result", root), r);
+    } catch (err) { if (mine === seq) toast(err.message, "err"); }
+  };
+  const schedule = () => { clearTimeout(timer); timer = setTimeout(run, 180); };
+  root.addEventListener("input", (e) => {
+    const el = e.target;
+    if (!el.name) return;
+    simState[el.name] = el.type === "number" || el.type === "range" ? Number(el.value) : el.value;
+    sync(); schedule();
+  });
+  root.addEventListener("change", (e) => { if (e.target.name === "month") { simState.month = e.target.value; run(); } });
+  root.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-preset]");
+    if (!b) return;
+    const month = simState.month;
+    simState = b.dataset.preset === "reset" ? { ...SIM_DEFAULT, month } : { ...simState, ...SIM_PRESETS[b.dataset.preset].set };
+    $$("input[name]", root).forEach((i) => { if (i.name in simState) i.value = simState[i.name]; });
+    sync(); run();
+  });
+  sync();
+  await run();
+}
+
+function drawSimulation(card, r) {
+  const b = r.baseline, sc = r.scenario, d = r.delta;
+  const big = (label, key, color) => {
+    const delta = d[key];
+    return `<div class="sim-big"><span>${label}</span><strong style="color:${color || "inherit"}">${lei(sc[key])}</strong>
+      <small class="${delta > 0 ? "pos" : delta < 0 ? "neg" : "muted"}">${delta > 0 ? "+" : delta < 0 ? "−" : "±"}${lei(Math.abs(delta))} față de ${esc(r.label)}</small></div>`;
+  };
+  const rows = [["Vânzări", "revenue"], ["Costul mărfii", "cogs"], ["Marja brută", "gross_margin"], ["Cheltuieli", "operating_expenses"],
+    ["Salarii (cost firmă)", "payroll_cost"], ["Profit înainte de impozit", "profit_before_tax"], ["Impozit pe profit", "company_tax"], ["Profit net", "profit"]];
+  const changed = Object.values(d).some((v) => Math.abs(v) > 0.5);
+  card.innerHTML = `
+    <div class="card-head"><div><h2>Rezultatul pe o lună</h2><p>${changed ? `Comparat cu ${esc(r.label)} (luna reală)` : "Mutați un cursor sau alegeți un scenariu din stânga."}</p></div></div>
+    <div class="sim-bigs">${big("Profit net", "profit", sc.profit >= 0 ? "var(--green)" : "var(--red)")}${big("Îți rămâne ție", "owner_income", "var(--gold)")}</div>
+    ${changed ? `<div class="sim-year ${r.yearly_profit_delta >= 0 ? "good" : "bad"}">Pe un an: <b>${r.yearly_profit_delta >= 0 ? "+" : "−"}${lei(Math.abs(r.yearly_profit_delta))}</b> profit net</div>` : ""}
+    <div class="chart-box" style="height:210px"><canvas id="sim-chart"></canvas></div>
+    <div class="table-wrap"><table class="compact"><thead><tr><th></th><th class="r">Acum</th><th class="r">Scenariu</th><th class="r">Diferență</th></tr></thead><tbody>
+      ${rows.map(([label, key]) => `<tr><td>${label}</td><td class="r">${lei(b[key])}</td><td class="r"><b>${lei(sc[key])}</b></td>
+        <td class="r ${d[key] > 0.5 ? (["cogs", "operating_expenses", "payroll_cost", "company_tax"].includes(key) ? "neg" : "pos") : d[key] < -0.5 ? (["cogs", "operating_expenses", "payroll_cost", "company_tax"].includes(key) ? "pos" : "neg") : "muted"}">${Math.abs(d[key]) > 0.5 ? `${d[key] > 0 ? "+" : "−"}${lei(Math.abs(d[key]))}` : "—"}</td></tr>`).join("")}
+      <tr><td>Prag de rentabilitate (vânzări/lună)</td><td class="r">${b.breakeven_revenue ? lei(b.breakeven_revenue) : "—"}</td><td class="r"><b>${sc.breakeven_revenue ? lei(sc.breakeven_revenue) : "—"}</b></td><td></td></tr>
+    </tbody></table></div>
+    ${r.notes.length ? `<ul class="insights mt">${r.notes.map((n) => `<li class="insight info"><span class="ic">${icon("star")}</span><span>${esc(n)}</span></li>`).join("")}</ul>` : ""}`;
+  makeChart($("#sim-chart", card), {
+    type: "bar",
+    data: { labels: ["Vânzări", "Costuri totale", "Profit net"],
+      datasets: [
+        { label: `Acum (${r.label})`, data: [b.revenue, b.cogs + b.operating_expenses + b.payroll_cost + b.company_tax, b.profit], backgroundColor: "rgba(148,163,184,.45)", borderRadius: 8, maxBarThickness: 46 },
+        { label: "Scenariu", data: [sc.revenue, sc.cogs + sc.operating_expenses + sc.payroll_cost + sc.company_tax, sc.profit], backgroundColor: ["#22d3ee", "#f87171", sc.profit >= 0 ? "#34d399" : "#f87171"], borderRadius: 8, maxBarThickness: 46 },
+      ] },
+    options: { responsive: true, maintainAspectRatio: false, animation: { duration: 500 },
+      plugins: { legend: { position: "bottom", labels: { usePointStyle: true, padding: 14 } }, tooltip: { callbacks: { label: (ctx) => ` ${ctx.dataset.label}: ${lei(ctx.parsed.y)}` } } },
+      scales: { x: { grid: { display: false } }, y: { ticks: { callback: moneyTick } } } },
+  });
+}
+
+let analysisMonths = 3;
+async function mountAnalysis(root) {
+  const end = state.month;
+  const a = await api(`/api/analysis?month=${end}&months=${analysisMonths}`);
+  const classTag = (c) => `<span class="tag abc abc-${c}">${c}</span>`;
+  root.innerHTML = `
+    <section class="card glass">
+      <div class="card-head"><div><h2>${icon("star")} Ce spun cifrele</h2><p>Perioada: ${esc(a.period.label)}</p></div>
+        <div class="segmented" id="analysis-period">${[3, 6, 12].map((m) => `<button type="button" data-m="${m}" class="${m === analysisMonths ? "active" : ""}">${m} luni</button>`).join("")}</div></div>
+      ${a.notes.length ? `<ul class="insights">${a.notes.map((n, i) => `<li class="insight ${i === 0 ? "good" : "warn"}"><span class="ic">${icon(i === 0 ? "users" : "alert")}</span><span>${esc(n)}</span></li>`).join("")}</ul>` : emptyState("Nu sunt destule date în perioadă.")}
+    </section>
+
+    <section class="grid cols-2 mt" style="align-items:start">
+      <article class="card glass">
+        <div class="card-head"><div><h2>Cine aduce profitul</h2><p>Clienții ordonați după profit (vânzări minus costul mărfii). Linia arată cât adună împreună.</p></div></div>
+        ${a.clients.length ? `<div class="chart-box" style="height:240px"><canvas id="pareto-chart"></canvas></div>
+        <div class="table-wrap"><table class="compact"><thead><tr><th>Clasa</th><th>Client</th><th class="r">Vânzări</th><th class="r">Profit</th><th class="r">Din total</th></tr></thead><tbody>
+          ${a.clients.map((c) => `<tr><td>${classTag(c.class)}</td><td>${esc(c.name)} <small class="muted">${esc(c.type || "")}</small></td><td class="r">${lei(c.revenue)}</td>
+            <td class="r"><b>${lei(c.profit)}</b></td><td class="r">${pct(c.share)}</td></tr>`).join("")}</tbody></table></div>
+        <p class="muted" style="font-size:12.5px">A = clienții care fac 80% din profit · B = următorii 15% · C = restul.</p>` : emptyState("Nicio vânzare cu client în perioadă.")}
+      </article>
+      <div class="grid">
+        <article class="card glass">
+          <div class="card-head"><div><h2>${icon("wallet")} Clienți de recâștigat</h2><p>Cumpărau des, dar nu au mai cumpărat de peste 60 de zile.</p></div></div>
+          ${a.inactive.length ? `<ul class="insights">${a.inactive.map((c) => `<li class="insight warn"><span class="ic">${icon("users")}</span><span><b>${esc(c.name)}</b>: ultima comandă pe ${formatDate(c.last_sale)}, ${c.invoices} facturi, ${lei(c.revenue)} în total.</span></li>`).join("")}</ul>`
+            : `<div class="insight good"><span class="ic">${icon("check")}</span><span>Toți clienții fideli au cumpărat în ultimele 60 de zile.</span></div>`}
+        </article>
+        <article class="card glass">
+          <div class="card-head"><div><h2>${icon("box")} Marfă care stă</h2><p>Bani blocați în stoc: <b style="color:var(--gold)">${lei(a.dead_stock_value)}</b></p></div></div>
+          ${a.dead_stock.length ? `<div class="table-wrap"><table class="compact"><tbody>${a.dead_stock.map((d) => `<tr><td><b>${esc(d.name)}</b><br><small class="muted">${esc(d.reason)}</small></td>
+            <td class="r">${d.stock} buc.</td><td class="r"><b>${lei(d.value)}</b></td></tr>`).join("")}</tbody></table></div>`
+            : `<div class="insight good"><span class="ic">${icon("check")}</span><span>Nu există marfă blocată: totul se vinde.</span></div>`}
+        </article>
+      </div>
+    </section>
+
+    <section class="card glass mt">
+      <div class="card-head"><div><h2>Produsele după profit</h2><p>Unde merită să aveți mereu stoc (A) și ce poate ieși din ofertă (C).</p></div></div>
+      <div class="table-wrap"><table class="compact"><thead><tr><th>Clasa</th><th>Cod</th><th>Produs</th><th class="r">Bucăți</th><th class="r">Vânzări</th><th class="r">Profit</th><th class="r">Din total</th></tr></thead><tbody>
+        ${a.products.map((p) => `<tr><td>${classTag(p.class)}</td><td class="mono">${esc(p.code)}</td><td>${esc(p.name)}</td><td class="r">${numberFmt.format(p.quantity)}</td>
+          <td class="r">${lei(p.revenue)}</td><td class="r ${p.profit < 0 ? "neg" : ""}"><b>${lei(p.profit)}</b></td><td class="r">${pct(p.share)}</td></tr>`).join("")}</tbody></table></div>
+    </section>`;
+  $$("#analysis-period button", root).forEach((b) => b.addEventListener("click", () => { analysisMonths = Number(b.dataset.m); mountAnalysis(root); }));
+  if (a.clients.length) {
+    makeChart($("#pareto-chart", root), {
+      data: { labels: a.clients.map((c) => c.name.length > 14 ? c.name.slice(0, 13) + "…" : c.name),
+        datasets: [
+          { type: "line", label: "Cumulat (%)", data: a.clients.map((c) => c.cumulative), yAxisID: "y1", borderColor: "#fbbf24", backgroundColor: "#fbbf24", tension: 0.3, pointRadius: 3 },
+          { type: "bar", label: "Profit", data: a.clients.map((c) => c.profit), backgroundColor: a.clients.map((c) => c.class === "A" ? "#22d3ee" : c.class === "B" ? "#a78bfa" : "#64748b"), borderRadius: 6, maxBarThickness: 34 },
+        ] },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => ctx.dataset.yAxisID === "y1" ? ` Cumulat: ${pct(ctx.parsed.y)}` : ` Profit: ${lei(ctx.parsed.y)}` } } },
+        scales: { x: { grid: { display: false }, ticks: { maxRotation: 45, minRotation: 0 } }, y: { ticks: { callback: moneyTick } },
+          y1: { position: "right", min: 0, max: 100, grid: { display: false }, ticks: { callback: (v) => `${v}%` } } } },
+    });
+  }
+}
+
 /* ================= Calendar fiscal ================= */
 
 const OBLIGATION_STATUS = { soon: "în curând", upcoming: "urmează", past: "termen trecut", paid: "plătit" };
@@ -1129,6 +1355,43 @@ function openReturn(sale) {
 
 /* ================= Stoc ================= */
 
+const URGENCY = { now: ["Comandați acum", "late"], week: ["Săptămâna aceasta", "unpaid"], soon: ["În curând", "paid"] };
+
+// Comenzi recomandate: ce, cât, de la cine și până când, după ritmul vânzărilor și termenul de livrare.
+async function mountReorder(panel) {
+  const r = await api("/api/reorder");
+  panel.innerHTML = `
+    <div class="card glass">
+      <div class="card-head"><div><h2>${icon("truck")} Comenzi recomandate</h2>
+        <p>Calculate din vânzările din ultimele 30 de zile, termenul de livrare al furnizorului și o rezervă de ${r.assumptions.safety_days} zile. O comandă acoperă cam ${r.assumptions.cover_days} de zile.</p></div>
+        ${r.count ? `<div class="stat-mini"><span>${r.count} produse</span><b>${lei(r.total)}</b><small>fără TVA · ${lei(r.total_with_vat)} cu TVA</small></div>` : ""}</div>
+      ${r.cash_warning ? `<div class="insight warn">${`<span class="ic">${icon("alert")}</span>`}<span>${esc(r.cash_warning)}</span></div>` : ""}
+      ${r.count ? "" : `<div class="insight good"><span class="ic">${icon("check")}</span><span>Nimic de comandat acum: stocul ajunge pentru perioada de livrare a fiecărui furnizor.</span></div>`}
+    </div>
+    ${r.groups.map((g, gi) => `
+      <article class="card glass mt reorder-group">
+        <div class="card-head"><div><h2>${esc(g.supplier)} <span class="tag ${URGENCY[g.urgency][1]}">${URGENCY[g.urgency][0]}</span></h2>
+          <p>Livrează în ~${g.lead_days} zile · plata la ${g.terms} zile, cam pe ${formatDate(g.payment_due)} · <b style="color:var(--text)">${lei(g.value)}</b> fără TVA</p></div>
+          <div class="toolbar"><button class="btn btn-sm" type="button" data-copy-order="${gi}">${icon("mail")}Copiază comanda</button>
+          ${/@/.test(g.contact) ? `<a class="btn btn-sm" href="mailto:${esc(g.contact.match(/[^\s,;]+@[^\s,;]+/)[0])}?subject=${encodeURIComponent("Comandă Testify Hardware")}&body=${encodeURIComponent(g.message)}">Trimite email</a>` : ""}</div></div>
+        <div class="table-wrap"><table class="compact"><thead><tr><th>Produs</th><th class="r">Stoc</th><th class="r">Vânzări/zi</th><th>Se termină</th><th>Comandați până</th><th class="r">Cantitate</th><th class="r">Valoare</th><th></th></tr></thead><tbody>
+          ${g.lines.map((l) => `<tr><td><b>${esc(l.name)}</b><br><small class="muted mono">${esc(l.code)}</small></td>
+            <td class="r ${l.stock <= l.min_stock ? "neg" : ""}">${l.stock}<small class="muted"> / min ${l.min_stock}</small></td>
+            <td class="r">${String(l.daily).replace(".", ",")}</td><td>${l.daily ? formatDate(l.run_out) : "—"}</td>
+            <td><span class="tag ${URGENCY[l.urgency][1]}">${l.urgency === "now" ? "azi" : formatDate(l.order_by)}</span></td>
+            <td class="r"><b>${l.quantity} buc.</b></td><td class="r">${lei(l.value)}</td>
+            <td class="actions"><button class="btn btn-sm" type="button" data-receive="${l.product_id}" title="Marfa a sosit: recepție">${icon("box")}Recepție</button></td></tr>`).join("")}
+        </tbody></table></div>
+      </article>`).join("")}`;
+  panel.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-copy-order]");
+    if (!btn) return;
+    const text = r.groups[Number(btn.dataset.copyOrder)].message;
+    try { await navigator.clipboard.writeText(text); toast("Comanda a fost copiată. O puteți lipi într-un email sau pe WhatsApp."); }
+    catch { openModal("Comanda", `<textarea rows="12" style="width:100%">${esc(text)}</textarea>`); }
+  });
+}
+
 let stockTab = "products";
 
 function productFormHTML(p = {}) {
@@ -1202,6 +1465,7 @@ async function renderStock(view) {
         <button type="button" data-tab="products" class="${stockTab === "products" ? "active" : ""}">Produse</button>
         <button type="button" data-tab="nir" class="${stockTab === "nir" ? "active" : ""}">Recepții (NIR)</button>
         <button type="button" data-tab="inventory" class="${stockTab === "inventory" ? "active" : ""}">Fișă de inventar</button>
+        <button type="button" data-tab="reorder" class="${stockTab === "reorder" ? "active" : ""}">${icon("truck")}Comenzi recomandate</button>
       </div>
       <div class="toolbar">
         <button class="btn" id="new-product" type="button">${icon("plus")}Produs nou</button>
@@ -1249,6 +1513,8 @@ async function renderStock(view) {
       </table></div>` : emptyState("Nicio recepție de marfă în această lună.")}
     </section>
 
+    <section class="${stockTab === "reorder" ? "" : "hidden"}" data-panel="reorder" id="reorder-panel"><div class="skeleton" style="height:200px"></div></section>
+
     <section class="card glass ${stockTab === "inventory" ? "" : "hidden"}" data-panel="inventory">
       <div class="card-head"><div><h2>Fișă de inventar — ${esc(monthLabel(state.month))}</h2><p>Stoc inițial + intrări − ieșiri = stoc final, la fel ca în raportul contabil.</p></div></div>
       <div class="table-wrap"><table class="compact">
@@ -1269,6 +1535,7 @@ async function renderStock(view) {
     $$("#stock-tabs button").forEach((x) => x.classList.toggle("active", x === b));
     $$("[data-panel]", view).forEach((p) => p.classList.toggle("hidden", p.dataset.panel !== stockTab));
   }));
+  mountReorder($("#reorder-panel", view));
   $("#receive").addEventListener("click", () => openReceive(alerts[0]?.id));
   $("#new-product").addEventListener("click", () => {
     openModal("Produs nou", `<form id="product-form">${productFormHTML()}
@@ -1410,6 +1677,7 @@ function supplierFormHTML(s = {}) {
       <label class="field" style="grid-column:1/-1"><span>Nume furnizor</span><input name="name" required maxlength="120" value="${esc(s.name || "")}"></label>
       <label class="field"><span>Termen de plată (zile)</span><input type="number" name="payment_terms" min="0" max="365" value="${esc(s.payment_terms ?? 30)}"><small>De obicei 15–30 de zile.</small></label>
       <label class="field"><span>Contact (opțional)</span><input name="contact" maxlength="200" value="${esc(s.contact || "")}" placeholder="telefon, email"></label>
+      <label class="field"><span>Livrează în (zile)</span><input type="number" name="lead_days" min="0" max="120" value="${esc(s.lead_days ?? 5)}"><small>De la comandă până la recepție. Folosit la comenzile recomandate.</small></label>
     </div>`;
 }
 
@@ -1462,7 +1730,7 @@ async function renderSuppliers(view) {
       const d = formData(e.target);
       try {
         await api(s ? `/api/suppliers/${s.id}` : "/api/suppliers", { method: s ? "PUT" : "POST",
-          body: { ...d, payment_terms: Number(d.payment_terms) || 0 } });
+          body: { ...d, payment_terms: Number(d.payment_terms) || 0, lead_days: Number(d.lead_days) || 0 } });
         closeModal(); toast("Furnizorul a fost salvat."); render();
       } catch (err) { toast(err.message, "err"); }
     });
@@ -1501,8 +1769,55 @@ function expenseFormHTML(exp = {}) {
       <label class="field"><span>Cotă TVA</span><select name="vat_kind">
         ${Object.entries(VAT_KINDS).map(([k, label]) => `<option value="${k}" ${k === (exp.vat_kind || categoryVat(exp.category || state.categories[0]?.name)) ? "selected" : ""}>${label}</option>`).join("")}
       </select></label>
+      <input type="hidden" name="doc_number" value="${esc(exp.doc_number || "")}">
     </div>
     <p class="muted" style="font-size:12px;margin:8px 0 0">Marfa pentru vânzare se introduce la <a href="#stoc" onclick="closeModal()">Stoc → Recepție marfă</a>, nu aici.</p>`;
+}
+
+// Poză la bon: imaginea se micșorează în browser (trimitere rapidă), apoi Testi (AI) o citește.
+function shrinkImage(file, maxSide = 1600) {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith("image/") || file.type === "image/gif") return resolve(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale); canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => resolve(blob ? new File([blob], "bon.jpg", { type: "image/jpeg" }) : file), "image/jpeg", 0.85);
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = () => resolve(file);
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+async function scanReceipt(input, form, out) {
+  const file = input.files[0];
+  input.value = "";
+  if (!file) return;
+  if (!state.ai?.enabled) {
+    toast("Citirea bonurilor folosește Testi cu AI. Îl porniți din Setări → Testi cu inteligență artificială.", "err");
+    return;
+  }
+  out.innerHTML = `<div class="receipt-box reading">${robotSVG("mini")}<span>Testi citește documentul… (câteva secunde)</span></div>`;
+  try {
+    const body = new FormData();
+    body.append("file", await shrinkImage(file));
+    const r = await api("/api/ai/receipt", { method: "POST", body });
+    const set = (name, value) => { const el = $(`[name=${name}]`, form); if (el && value !== "" && value != null) el.value = value; };
+    set("date", r.date); set("category", r.category); set("description", r.description); set("supplier", r.supplier);
+    set("amount", r.net ? r.net.toFixed(2) : ""); set("vat_kind", r.vat_kind); set("doc_number", r.document_number);
+    const warn = r.confidence !== "high" || !r.consistent || r.notes;
+    out.innerHTML = `<div class="receipt-box ${warn ? "warn" : "good"}">${icon(warn ? "alert" : "check")}<span>
+      <b>Am completat cheltuiala din document${r.document_number ? ` (${esc(r.document_number)})` : ""}.</b>
+      Total cu TVA: <b>${lei(r.total, true)}</b> = ${lei(r.net, true)} + TVA ${lei(r.vat, true)}.
+      ${!r.consistent ? " Sumele nu se leagă perfect: verificați-le." : ""}${r.notes ? ` ${esc(r.notes)}` : ""}
+      ${warn ? " Verificați câmpurile înainte de a salva." : " Verificați și apăsați „Adaugă cheltuiala”."}</span></div>`;
+    $("[name=amount]", form).focus();
+  } catch (err) {
+    out.innerHTML = `<div class="receipt-box warn">${icon("alert")}<span>${esc(err.message)}</span></div>`;
+  }
 }
 
 const VAT_KINDS = { standard: "Standard (21%)", reduced: "Redusă (11%)", none: "Fără TVA (scutit)" };
@@ -1517,7 +1832,7 @@ function wireExpenseForm(form) {
 function expensePayload(form) {
   const d = formData(form);
   return { date: d.date, category: d.category, description: d.description, amount: Number(d.amount),
-    supplier: d.supplier, vat_kind: d.vat_kind };
+    supplier: d.supplier, vat_kind: d.vat_kind, doc_number: d.doc_number || "" };
 }
 
 async function renderExpenses(view) {
@@ -1532,7 +1847,9 @@ async function renderExpenses(view) {
     <section class="grid cols-2" style="align-items:start">
       <article class="card glass">
         <div class="card-head"><div><h2>Adaugă o cheltuială</h2><p>Facturi, chirie, utilități, transport…</p></div>
-          <button class="btn btn-sm" id="manage-cats" type="button">${icon("settings")}Categorii</button></div>
+          <div class="toolbar"><label class="btn btn-sm btn-gold scan-btn" title="Fotografiați bonul sau factura: Testi completează singur cheltuiala">${icon("camera")}Citește bonul<input type="file" id="receipt-file" accept="image/*,application/pdf" capture="environment" hidden></label>
+          <button class="btn btn-sm" id="manage-cats" type="button">${icon("settings")}Categorii</button></div></div>
+        <div id="receipt-result"></div>
         <form id="expense-form">${expenseFormHTML()}
           <div class="form-actions"><button class="btn btn-primary" type="submit">${icon("plus")}Adaugă cheltuiala</button></div>
         </form>
@@ -1570,6 +1887,7 @@ async function renderExpenses(view) {
     </section>`;
 
   animateBars(view);
+  $("#receipt-file").addEventListener("change", (e) => scanReceipt(e.target, $("#expense-form"), $("#receipt-result")));
   $("#manage-cats").addEventListener("click", () => openCategories(render));
   wireExpenseForm($("#expense-form"));
   $("#expense-form").addEventListener("submit", async (e) => {
@@ -1991,6 +2309,10 @@ async function renderReports(view) {
         <div><h3>Descarcă PDF</h3><p>Raport lunar gata de trimis contabilei sau de printat.</p></div>
       </button>
     </section>
+    <button class="card glass export-card letter-card mt" id="exp-letter" type="button">
+      <span class="ic" style="background:rgba(251,191,36,.15);color:var(--gold)">${icon("mail")}</span>
+      <div><h3>Scrisoarea lunii ✨</h3><p>Un PDF frumos, cu grafice și explicații pe înțeles: ce a mers bine, la ce să fii atent și ce urmează. Bun de trimis partenerilor sau băncii.</p></div>
+    </button>
 
     <section class="grid cols-2-even mt" style="align-items:start">
       <article class="card glass" id="closing-card"><div class="skeleton" style="height:180px"></div></article>
@@ -2026,10 +2348,11 @@ async function renderReports(view) {
   const download = (type) => {
     const a = document.createElement("a");
     a.href = `/api/export/${type}?month=${state.month}`;
-    a.download = `raport-${state.month}.${type === "excel" ? "xlsx" : "pdf"}`;
+    a.download = type === "letter" ? `scrisoarea-lunii-${state.month}.pdf` : `raport-${state.month}.${type === "excel" ? "xlsx" : "pdf"}`;
     document.body.append(a); a.click(); a.remove();
-    toast(`Se descarcă raportul ${type === "excel" ? "Excel" : "PDF"}…`);
+    toast(type === "letter" ? "Se descarcă Scrisoarea lunii…" : `Se descarcă raportul ${type === "excel" ? "Excel" : "PDF"}…`);
   };
+  $("#exp-letter").addEventListener("click", () => download("letter"));
   $("#exp-excel").addEventListener("click", () => download("excel"));
   $("#exp-pdf").addEventListener("click", () => download("pdf"));
   mountClosing($("#closing-card"));
@@ -2189,6 +2512,22 @@ async function renderSettings(view) {
             <div id="import-result"></div>
           </form>
         </article>
+        <article class="card glass efactura-card">
+          <div class="card-head"><div><h2>${icon("excel")} Import e-Factura (SPV)</h2>
+            <p>Facturile de la furnizori, descărcate din Spațiul Privat Virtual ANAF (fișiere XML sau arhivele ZIP). Marfa intră în stoc, restul devin cheltuieli. Nu mai tastați nimic.</p></div></div>
+          <label class="drop" id="efactura-drop">${icon("refresh")}<span><b>Alegeți fișierele</b> sau trageți-le aici<br><small class="muted">XML sau ZIP, mai multe deodată</small></span>
+            <input type="file" id="efactura-files" accept=".xml,.zip" multiple hidden></label>
+        </article>
+        <article class="card glass" id="security-card">
+          <div class="card-head"><div><h2>${icon("lock")} Siguranță</h2><p>Blocare automată, intrare rapidă cu PIN pe telefon și o copie în plus în cloud.</p></div></div>
+          <form id="security-form"><div class="form-grid">
+            <label class="field"><span>Blocare după (minute fără activitate)</span><input type="number" name="idle_lock_minutes" min="0" max="480" value="${esc(s.idle_lock_minutes ?? 15)}"><small>0 = nu se blochează niciodată.</small></label>
+            <label class="field" style="grid-column:1/-1"><span>Folder pentru o copie în plus (opțional)</span><input name="backup_extra_dir" maxlength="400" value="${esc(s.backup_extra_dir || "")}" placeholder="ex. C:\\Users\\Robert\\Google Drive\\Testify">
+              <small>Un folder sincronizat cu Google Drive / OneDrive sau un stick. Copiile zilnice ajung și acolo.${s.backup_extra_status ? ` Ultima copie: ${esc(s.backup_extra_status)}.` : ""}</small></label>
+          </div><div class="form-actions"><button class="btn btn-primary" type="submit">${icon("check")}Salvează</button></div></form>
+          <div class="pin-row"><div><b>PIN de intrare rapidă</b><br><small class="muted">${state.hasPin ? "Activ. Pe telefon intrați cu PIN-ul în loc de parolă." : "4–8 cifre, pentru telefon. După 3 greșeli se cere parola."}</small></div>
+            <div class="toolbar">${state.hasPin ? `<button class="btn btn-sm btn-ghost" id="pin-off" type="button">Dezactivează</button>` : ""}<button class="btn btn-sm" id="pin-set" type="button">${icon("lock")}${state.hasPin ? "Schimbă PIN-ul" : "Setează PIN"}</button></div></div>
+        </article>
         <article class="card glass" id="backup-card"><div class="skeleton" style="height:160px"></div></article>
         <article class="card glass" style="border-color:rgba(248,113,113,.3)">
           <div class="card-head"><div><h2>Datele firmei T3 2026</h2><p>Înlocuiește TOATE datele cu fișierele primite de la firmă (raportul contabil iulie–septembrie 2026).</p></div></div>
@@ -2201,7 +2540,8 @@ async function renderSettings(view) {
     e.preventDefault();
     const d = formData(e.target);
     const body = { company_name: d.company_name, owner_name: d.owner_name, tax_regime: d.tax_regime, vat_payer: $("[name=vat_payer]", e.target).checked,
-      payday: Number(d.payday) || 10, tax_loss_carried: Number(d.tax_loss_carried) || 0 };
+      payday: Number(d.payday) || 10, tax_loss_carried: Number(d.tax_loss_carried) || 0,
+      idle_lock_minutes: Number(s.idle_lock_minutes ?? 15), backup_extra_dir: s.backup_extra_dir || "" };
     try {
       await api("/api/settings", { method: "PUT", body });
       $("#brand-name").textContent = body.company_name;
@@ -2268,6 +2608,97 @@ async function renderSettings(view) {
     }
   });
   mountBackups($("#backup-card"));
+  $("#efactura-files").addEventListener("change", (e) => { if (e.target.files.length) efacturaPreview([...e.target.files]); e.target.value = ""; });
+  const drop = $("#efactura-drop");
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files.length) efacturaPreview([...e.dataTransfer.files]); });
+  $("#security-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const d = formData(e.target);
+    const body = { company_name: s.company_name, owner_name: s.owner_name, tax_regime: s.tax_regime, vat_payer: s.vat_payer === "1",
+      payday: Number(s.payday) || 10, tax_loss_carried: Number(s.tax_loss_carried) || 0,
+      idle_lock_minutes: Number(d.idle_lock_minutes) || 0, backup_extra_dir: d.backup_extra_dir };
+    try {
+      await api("/api/settings", { method: "PUT", body });
+      state.idleMinutes = body.idle_lock_minutes; armIdleLock();
+      toast("Setările de siguranță au fost salvate."); render();
+    } catch (err) { toast(err.message, "err"); }
+  });
+  $("#pin-off")?.addEventListener("click", async () => {
+    try { await api("/api/auth/pin", { method: "DELETE" }); state.hasPin = false; toast("PIN-ul a fost dezactivat."); render(); }
+    catch (err) { toast(err.message, "err"); }
+  });
+  $("#pin-set").addEventListener("click", () => {
+    openModal("PIN de intrare rapidă", `<form id="pin-form"><div class="form-grid">
+      <label class="field"><span>PIN nou (4–8 cifre)</span><input type="password" name="pin" inputmode="numeric" pattern="\\d{4,8}" required autocomplete="new-password"></label>
+      <label class="field"><span>Parola actuală</span><input type="password" name="current" required autocomplete="current-password"></label></div>
+      <div class="form-actions"><button class="btn btn-ghost" type="button" onclick="closeModal()">Renunță</button>
+      <button class="btn btn-primary" type="submit">${icon("check")}Salvează PIN-ul</button></div></form>`, (body) => {
+      $("#pin-form", body).addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        try { await api("/api/auth/pin", { method: "PUT", body: formData(ev.target) }); state.hasPin = true; closeModal(); toast("PIN-ul a fost setat."); render(); }
+        catch (err) { toast(err.message, "err"); }
+      });
+    });
+  });
+}
+
+// e-Factura: previzualizare, cu posibilitatea de a schimba destinația fiecărei linii, apoi salvare.
+async function efacturaPreview(files) {
+  const body = new FormData();
+  files.forEach((f) => body.append("files", f));
+  let data;
+  try { data = await api("/api/efactura/preview", { method: "POST", body }); }
+  catch (err) { toast(err.message, "err"); return; }
+  if (!state.products?.length) await loadCatalog();
+  if (!state.categories?.length) await loadCategories();
+  const productSelect = (line) => `<select data-field="target">
+      <option value="product" ${line.target === "product" ? "selected" : ""} ${line.quantity % 1 ? "disabled" : ""}>Marfă în stoc</option>
+      <option value="expense" ${line.target === "expense" ? "selected" : ""}>Cheltuială</option>
+      <option value="skip">Nu importa</option></select>
+    <select data-field="product_id" class="${line.target === "product" ? "" : "hidden"}">${state.products.map((p) => `<option value="${p.id}" ${p.id === line.product_id ? "selected" : ""}>${esc(p.code)} · ${esc(p.name)}</option>`).join("")}</select>
+    <select data-field="category" class="${line.target === "expense" ? "" : "hidden"}">${state.categories.map((c) => `<option ${c.name === line.category ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>`;
+  openModal("Import e-Factura", `
+    ${data.errors.length ? `<div class="insight warn"><span class="ic">${icon("alert")}</span><span>${data.errors.map(esc).join("<br>")}</span></div>` : ""}
+    <div class="efactura-list">${data.invoices.map((inv, i) => `
+      <div class="efactura-inv ${inv.duplicate ? "dup" : ""}" data-inv="${i}">
+        <header><b>${esc(inv.supplier)}</b> · ${inv.credit_note ? "notă de credit" : "factura"} <span class="mono">${esc(inv.number)}</span> din ${formatDate(inv.date)}
+          <span class="r">${lei(inv.total, true)} cu TVA</span></header>
+        ${inv.duplicate ? `<p class="muted">Factura a fost deja importată și va fi sărită.</p>` : `
+        <div class="table-wrap"><table class="compact"><tbody>${inv.lines.map((l, j) => `<tr data-line="${j}">
+          <td><b>${esc(l.name)}</b><br><small class="muted">${l.quantity} × ${lei(l.unit_price, true)} · TVA ${l.vat_rate}%</small></td>
+          <td class="r">${lei(l.net, true)}</td><td class="efactura-target">${productSelect(l)}</td></tr>`).join("")}</tbody></table></div>`}
+      </div>`).join("")}</div>
+    <div class="form-actions"><button class="btn btn-ghost" type="button" onclick="closeModal()">Renunță</button>
+      <button class="btn btn-primary" type="button" id="efactura-save">${icon("check")}Importă ${((n) => n === 1 ? "1 factură" : `${n} facturi`)(data.invoices.filter((x) => !x.duplicate).length)}</button></div>`, (root) => {
+    root.addEventListener("change", (e) => {
+      const sel = e.target.closest("[data-field=target]");
+      if (!sel) return;
+      const cell = sel.parentElement;
+      $("[data-field=product_id]", cell).classList.toggle("hidden", sel.value !== "product");
+      $("[data-field=category]", cell).classList.toggle("hidden", sel.value !== "expense");
+    });
+    $("#efactura-save", root).addEventListener("click", async () => {
+      const invoices = data.invoices.filter((inv) => !inv.duplicate).map((inv) => {
+        const box = $(`[data-inv="${data.invoices.indexOf(inv)}"]`, root);
+        return { number: inv.number, date: inv.date, due_date: inv.due_date, supplier: inv.supplier,
+          lines: inv.lines.map((l, j) => {
+            const row = $(`[data-line="${j}"]`, box);
+            const target = $("[data-field=target]", row).value;
+            return { name: l.name, quantity: l.quantity, net: l.net, vat_rate: l.vat_rate, vat_kind: l.vat_kind, target,
+              product_id: target === "product" ? Number($("[data-field=product_id]", row).value) : null,
+              category: target === "expense" ? $("[data-field=category]", row).value : null };
+          }) };
+      });
+      if (!invoices.length) { closeModal(); return; }
+      try {
+        const r = await api("/api/efactura/save", { method: "POST", body: { invoices } });
+        closeModal();
+        toast(`Import reușit: ${r.purchases} recepții de marfă și ${r.expenses} cheltuieli${r.skipped ? ` (${r.skipped} facturi sărite, deja importate)` : ""}.`);
+      } catch (err) { toast(err.message, "err"); }
+    });
+  });
 }
 
 const fileSize = (bytes) => bytes > 1048576 ? `${(bytes / 1048576).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -2386,6 +2817,19 @@ const robot = {
     $("#assistant-avatar").innerHTML = robotSVG("waving");
     $("#assistant-fab").onclick = () => this.toggle();
     $("#assistant-close").onclick = () => this.close();
+    this.voice = false;
+    try { this.voice = localStorage.getItem("testi-voice") === "1"; } catch { /* stocare indisponibilă */ }
+    const voiceBtn = $("#assistant-voice");
+    if (!("speechSynthesis" in window)) voiceBtn.classList.add("hidden");
+    voiceBtn.classList.toggle("on", this.voice);
+    voiceBtn.onclick = () => {
+      this.voice = !this.voice;
+      try { localStorage.setItem("testi-voice", this.voice ? "1" : "0"); } catch { /* stocare indisponibilă */ }
+      voiceBtn.classList.toggle("on", this.voice);
+      if (this.voice) this.speak($$("#assistant-messages .bubble:not(.typing)").map((b) => b.innerText).join(" "));
+      else speechSynthesis.cancel();
+      toast(this.voice ? "Testi îți citește mesajele cu voce." : "Vocea lui Testi este oprită.");
+    };
     let greeted = false;
     try { greeted = sessionStorage.getItem("testi-greeted") === "1"; } catch { /* stocare indisponibilă */ }
     this.refresh(!greeted);
@@ -2393,7 +2837,22 @@ const robot = {
   },
 
   toggle() { $("#assistant-panel").classList.contains("hidden") ? this.open() : this.close(); },
-  close() { $("#assistant-panel").classList.add("hidden"); $("#assistant-fab").classList.remove("open"); },
+  close() {
+    $("#assistant-panel").classList.add("hidden"); $("#assistant-fab").classList.remove("open");
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+  },
+
+  // Vocea lui Testi: sinteza vocală a browserului, în română (gratuit, fără internet pe Windows/Android).
+  speak(text) {
+    if (!this.voice || !("speechSynthesis" in window) || !text) return;
+    const clean = text.replace(/\s+/g, " ").replace(/(\d)\.(\d{3})/g, "$1$2").replace(/−/g, "minus ").trim();
+    const say = new SpeechSynthesisUtterance(clean);
+    say.lang = "ro-RO";
+    const voice = speechSynthesis.getVoices().find((v) => v.lang?.toLowerCase().startsWith("ro"));
+    if (voice) say.voice = voice;
+    say.rate = 1.02;
+    speechSynthesis.speak(say);
+  },
   open() {
     $("#assistant-panel").classList.remove("hidden");
     $("#assistant-fab").classList.add("open");
@@ -2499,6 +2958,7 @@ const robot = {
       if (run !== this.playing) return;
       typing.className = `bubble ${msg.tone || ""}`;
       typing.innerHTML = msg.html;
+      this.speak(typing.innerText);
       box.scrollTop = box.scrollHeight;
       await new Promise((r) => setTimeout(r, reduce ? 0 : 250));
     }
@@ -2557,6 +3017,7 @@ const robot = {
       typing.remove();
       this.chat.push({ role: "assistant", content: reply });
       this.addBubble("assistant", reply);
+      this.speak(reply.replace(/[*#_`>-]/g, " "));
     } catch (err) {
       typing.remove();
       this.chat.pop();  // întrebarea fără răspuns nu rămâne în istoric

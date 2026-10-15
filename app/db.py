@@ -187,6 +187,9 @@ MIGRATIONS = [
     ("sales", "discount", "REAL NOT NULL DEFAULT 0"),
     ("employees", "hours_per_day", "INTEGER NOT NULL DEFAULT 8"),
     ("employees", "leave_days", "INTEGER NOT NULL DEFAULT 21"),
+    ("expenses", "doc_number", "TEXT NOT NULL DEFAULT ''"),
+    ("suppliers", "lead_days", "INTEGER NOT NULL DEFAULT 5"),
+    ("sessions", "last_seen", "TEXT"),
 ]
 
 # Termenul de plată implicit la furnizori (clientul plătește la 15–30 de zile).
@@ -202,6 +205,8 @@ DEFAULT_SETTINGS = {
     "cash_balance_date": "",
     "payday": "10",              # ziua din lună în care se plătesc salariile
     "tax_loss_carried": "0",     # pierdere fiscală din anii anteriori, de recuperat
+    "idle_lock_minutes": "15",   # blocare automată după inactivitate (0 = niciodată)
+    "backup_extra_dir": "",      # folder suplimentar pentru copii (ex. sincronizat cu Google Drive)
 }
 
 # Categoria de TVA implicită: standard (21%), redusă (11%) sau fără TVA (scutit).

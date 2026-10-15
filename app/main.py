@@ -17,8 +17,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from . import (assistant_ai, audit, auth, backup, calc, closing, demo, exports, fiscal, importer, inventory,
-               obligations, treasury)
+from . import (assistant_ai, audit, auth, backup, calc, closing, demo, efactura, exports, fiscal, importer,
+               inventory, letter, obligations, planning, treasury)
 from .db import DEFAULT_SETTINGS, DEFAULT_SUPPLIER_TERMS, get_conn, get_settings, init_db, set_setting
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -199,6 +199,8 @@ def auth_status(testify_session: str | None = Cookie(default=None)):
             "company": settings.get("company_name"),
             "owner_name": settings.get("owner_name", ""),
             "has_recovery": auth.has_recovery_code(conn),
+            "has_pin": auth.has_pin(conn),
+            "idle_lock_minutes": auth.idle_limit_minutes(conn),
         }
 
 
@@ -225,6 +227,27 @@ def auth_login(body: PasswordIn, response: Response):
             auth.limiter.failed()
             raise HTTPException(status_code=401, detail="Parolă greșită.")
         auth.limiter.reset()
+        auth.unlock_pin(conn)
+        start_session(response, conn)
+    return {"ok": True}
+
+
+class PinIn(BaseModel):
+    pin: str = Field(pattern=r"^\d{4,8}$")
+
+
+@app.post("/api/auth/pin-login")
+def auth_pin_login(body: PinIn, response: Response):
+    auth.limiter.check()
+    with get_conn() as conn:
+        if not auth.has_pin(conn):
+            raise HTTPException(status_code=400, detail="PIN-ul nu este activ. Intrați cu parola.")
+        if not auth.check_pin(conn, body.pin):
+            auth.limiter.failed()
+            conn.commit()  # greșeala se numără chiar dacă cererea se termină cu eroare
+            left = auth.has_pin(conn)
+            raise HTTPException(status_code=401, detail="PIN greșit." if left else
+                                "PIN greșit de 3 ori: intrați acum cu parola (PIN-ul se reactivează după).")
         start_session(response, conn)
     return {"ok": True}
 
@@ -263,6 +286,30 @@ def change_password(body: ChangePasswordIn):
         if not auth.check_password(conn, body.current):
             raise HTTPException(status_code=400, detail="Parola actuală nu este corectă.")
         auth.set_password(conn, body.new)
+    return {"ok": True}
+
+
+class SetPinIn(CurrentPasswordIn):
+    pin: str = Field(pattern=r"^\d{4,8}$")
+
+
+@api.put("/auth/pin")
+def set_pin(body: SetPinIn):
+    with get_conn() as conn:
+        if not auth.check_password(conn, body.current):
+            raise HTTPException(status_code=400, detail="Parola actuală nu este corectă.")
+        if len(set(body.pin)) == 1 or body.pin in "0123456789" or body.pin in "9876543210":
+            raise HTTPException(status_code=400, detail="Alegeți un PIN mai greu de ghicit (nu 1111 sau 1234).")
+        auth.set_pin(conn, body.pin)
+        audit.log_event(conn, "PIN-ul de intrare rapidă a fost setat", "security")
+    return {"ok": True}
+
+
+@api.delete("/auth/pin")
+def delete_pin():
+    with get_conn() as conn:
+        auth.clear_pin(conn)
+        audit.log_event(conn, "PIN-ul de intrare rapidă a fost dezactivat", "security")
     return {"ok": True}
 
 
@@ -306,6 +353,14 @@ def export_excel(month: str = Query(pattern=MONTH_PATTERN)):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="raport-{month}.xlsx"'},
     )
+
+
+@api.get("/export/letter")
+def export_letter(month: str = Query(pattern=MONTH_PATTERN)):
+    with get_conn() as conn:
+        content = letter.letter_pdf(conn, month)
+    return Response(content, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="scrisoarea-lunii-{month}.pdf"'})
 
 
 @api.get("/export/pdf")
@@ -561,6 +616,7 @@ class ExpenseIn(BaseModel):
     amount: float = Field(gt=0, le=MAX_AMOUNT)
     supplier: str = Field(default="", max_length=120)
     vat_kind: str = Field(default="standard", pattern=VAT_KIND_PATTERN)
+    doc_number: str = Field(default="", max_length=40)
 
     @field_validator("date")
     @classmethod
@@ -595,9 +651,10 @@ def create_expense(body: ExpenseIn):
     with get_conn() as conn:
         check_category(conn, body.category)
         cursor = conn.execute(
-            "INSERT INTO expenses(date, category, description, amount, supplier, vat_kind) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (body.date, body.category, body.description, body.amount, body.supplier, body.vat_kind),
+            "INSERT INTO expenses(date, category, description, amount, supplier, vat_kind, doc_number) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (body.date, body.category, body.description, body.amount, body.supplier, body.vat_kind,
+             body.doc_number.strip()),
         )
     return {"id": cursor.lastrowid}
 
@@ -817,6 +874,7 @@ class SupplierIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     payment_terms: int = Field(default=DEFAULT_SUPPLIER_TERMS, ge=0, le=365)
     contact: str = Field(default="", max_length=200)
+    lead_days: int = Field(default=5, ge=0, le=120)  # în câte zile livrează după comandă
 
 
 @api.get("/suppliers")
@@ -842,8 +900,8 @@ def create_supplier(body: SupplierIn):
     with get_conn() as conn:
         if conn.execute("SELECT 1 FROM suppliers WHERE name = ?", (body.name,)).fetchone():
             raise HTTPException(status_code=400, detail="Furnizorul există deja.")
-        cursor = conn.execute("INSERT INTO suppliers(name, payment_terms, contact) VALUES (?, ?, ?)",
-                              (body.name, body.payment_terms, body.contact))
+        cursor = conn.execute("INSERT INTO suppliers(name, payment_terms, contact, lead_days) VALUES (?, ?, ?, ?)",
+                              (body.name, body.payment_terms, body.contact, body.lead_days))
     return {"id": cursor.lastrowid}
 
 
@@ -855,8 +913,8 @@ def update_supplier(supplier_id: int, body: SupplierIn):
             raise HTTPException(status_code=404, detail="Furnizorul nu există.")
         if conn.execute("SELECT 1 FROM suppliers WHERE name = ? AND id != ?", (body.name, supplier_id)).fetchone():
             raise unique_name_error("un furnizor")
-        conn.execute("UPDATE suppliers SET name = ?, payment_terms = ?, contact = ? WHERE id = ?",
-                     (body.name, body.payment_terms, body.contact, supplier_id))
+        conn.execute("UPDATE suppliers SET name = ?, payment_terms = ?, contact = ?, lead_days = ? WHERE id = ?",
+                     (body.name, body.payment_terms, body.contact, body.lead_days, supplier_id))
         if old["name"] != body.name:  # redenumirea se vede peste tot
             for table in ("purchases", "products", "expenses"):
                 conn.execute(f"UPDATE {table} SET supplier = ? WHERE supplier = ?", (body.name, old["name"]))
@@ -1163,17 +1221,25 @@ class SettingsIn(BaseModel):
     vat_payer: bool = True
     payday: int = Field(default=10, ge=1, le=28)
     tax_loss_carried: float = Field(default=0, ge=0, le=MAX_AMOUNT)
+    idle_lock_minutes: int = Field(default=15, ge=0, le=480)
+    backup_extra_dir: str = Field(default="", max_length=400)
 
 
 @api.get("/settings")
 def read_settings():
     with get_conn() as conn:
         settings = get_settings(conn)
-    return {key: settings.get(key, default) for key, default in DEFAULT_SETTINGS.items()}
+    result = {key: settings.get(key, default) for key, default in DEFAULT_SETTINGS.items()}
+    result["backup_extra_status"] = settings.get("backup_extra_status", "")
+    return result
 
 
 @api.put("/settings")
 def write_settings(body: SettingsIn):
+    try:
+        body.backup_extra_dir = backup.check_extra_dir(body.backup_extra_dir)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     with get_conn() as conn:
         old = get_settings(conn)
         changed = []
@@ -1397,6 +1463,125 @@ def save_goal(body: GoalIn):
                          "SET revenue = excluded.revenue, profit = excluded.profit",
                          (body.month, body.revenue, body.profit))
     return {"ok": True}
+
+
+# ---------- Bon / factură citite cu AI ----------
+
+@api.post("/ai/receipt")
+async def ai_receipt(file: UploadFile = File(...)):
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Fișierul depășește 10 MB. Faceți o poză mai mică.")
+    media_type = (file.content_type or "").split(";")[0].strip().lower()
+    if media_type == "image/jpg":
+        media_type = "image/jpeg"
+    def read():  # conexiunea SQLite se deschide în același fir în care e folosită
+        with get_conn() as conn:
+            return assistant_ai.read_receipt(conn, data, media_type)
+
+    try:
+        return await asyncio.to_thread(read)
+    except assistant_ai.AIError as error:
+        raise HTTPException(status_code=error.status, detail=str(error))
+
+
+# ---------- e-Factura (SPV) ----------
+
+@api.post("/efactura/preview")
+async def efactura_preview(files: list[UploadFile] = File(...)):
+    contents = []
+    for upload in files:
+        data = await upload.read()
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail=f"„{upload.filename}” depășește 10 MB.")
+        contents.append((upload.filename or "factura.xml", data))
+    try:
+        with get_conn() as conn:
+            return efactura.preview(conn, contents)
+    except efactura.EFacturaError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+class EFacturaLineIn(BaseModel):
+    name: str = Field(max_length=300)
+    quantity: float = Field(gt=0, le=1_000_000)
+    net: float = Field(ge=-MAX_AMOUNT, le=MAX_AMOUNT)
+    vat_rate: float = Field(ge=0, le=100)
+    target: str = Field(pattern="^(product|expense|skip)$")
+    product_id: int | None = None
+    category: str | None = Field(default=None, max_length=100)
+    vat_kind: str | None = Field(default=None, pattern=VAT_KIND_PATTERN)
+
+
+class EFacturaInvoiceIn(BaseModel):
+    number: str = Field(max_length=60)
+    date: str
+    due_date: str | None = None
+    supplier: str = Field(min_length=1, max_length=200)
+    lines: list[EFacturaLineIn] = Field(min_length=1, max_length=500)
+
+    @field_validator("date", "due_date")
+    @classmethod
+    def check_dates(cls, value):
+        return valid_date(value)
+
+
+class EFacturaSaveIn(BaseModel):
+    invoices: list[EFacturaInvoiceIn] = Field(min_length=1, max_length=200)
+
+
+@api.post("/efactura/save")
+def efactura_save(body: EFacturaSaveIn):
+    with get_conn() as conn:
+        try:
+            result = efactura.save(conn, [i.model_dump() for i in body.invoices], supplier_terms)
+        except efactura.EFacturaError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        product_ids = [l.product_id for i in body.invoices for l in i.lines if l.target == "product"]
+        ensure_stock(conn, *product_ids)
+        if result["purchases"] or result["expenses"]:
+            audit.log_event(conn, f"Import e-Factura: {len(body.invoices) - result['skipped']} facturi "
+                            f"({result['purchases']} recepții, {result['expenses']} cheltuieli)", "import")
+    return result
+
+
+# ---------- Decizii: simulator, comenzi, analiză ----------
+
+class SimulateIn(BaseModel):
+    month: str = Field(pattern=MONTH_PATTERN)
+    price_pct: float = Field(default=0, ge=-50, le=100)
+    volume_pct: float = Field(default=0, ge=-90, le=300)
+    cost_pct: float = Field(default=0, ge=-50, le=100)
+    raise_pct: float = Field(default=0, ge=-30, le=100)
+    new_employees: list[float] = Field(default_factory=list, max_length=10)
+    extra_expenses: float = Field(default=0, ge=-MAX_AMOUNT, le=MAX_AMOUNT)
+
+    @field_validator("new_employees")
+    @classmethod
+    def check_salaries(cls, value):
+        if any(not 0 < gross <= 100_000 for gross in value):
+            raise ValueError("Salariul brut al angajatului nou trebuie să fie între 1 și 100.000 lei.")
+        return value
+
+
+@api.post("/simulate")
+def simulate(body: SimulateIn):
+    with get_conn() as conn:
+        return planning.simulate(conn, body.month, body.price_pct, body.volume_pct, body.cost_pct,
+                                 body.raise_pct, body.new_employees, body.extra_expenses)
+
+
+@api.get("/reorder")
+def get_reorder():
+    with get_conn() as conn:
+        return planning.reorder(conn)
+
+
+@api.get("/analysis")
+def get_analysis(month: str = Query(default_factory=calc.current_month, pattern=MONTH_PATTERN),
+                 months: int = Query(default=3, ge=1, le=12)):
+    with get_conn() as conn:
+        return planning.analysis(conn, month, months)
 
 
 @api.post("/demo")
