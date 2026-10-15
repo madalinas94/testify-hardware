@@ -1,0 +1,3 @@
+# Pentru teste (pe GitHub și local): pip install -r requirements-dev.txt
+-r requirements.txt
+pytest==9.1.1

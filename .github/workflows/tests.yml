@@ -23,7 +23,7 @@ jobs:
           cache: pip
 
       - name: Instalează dependențele
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Rulează testele (calcule, API, performanță cu 5 ani de date)
         env:
@@ -47,7 +47,7 @@ jobs:
 
       - name: Instalează dependențele și browserul
         run: |
-          pip install -r requirements.txt playwright
+          pip install -r requirements-dev.txt playwright
           python -m playwright install --with-deps chromium
 
       - name: Un browser apasă butoanele, ca Robert

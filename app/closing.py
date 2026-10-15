@@ -9,19 +9,30 @@ import sqlite3
 
 LOCK_MESSAGE = "LUNA_INCHISA"
 # Tabelul → expresia care dă data documentului.
-LOCKED_TABLES = {"sales": "date", "expenses": "date", "purchases": "date", "salary_history": "effective_from"}
+# Tabelul → (coloana cu data documentului, coloanele care schimbă cifrele lunii).
+# Încasarea unei facturi, scadența sau numele furnizorului se pot schimba și după închidere: nu
+# modifică profitul, TVA sau stocul lunii (o factură din septembrie se încasează în octombrie).
+LOCKED_TABLES = {
+    "sales": ("date", ["date", "amount", "quantity", "unit_price", "unit_cost", "product_id", "discount",
+                       "storno_of", "product"]),
+    "expenses": ("date", ["date", "amount", "category", "vat_kind"]),
+    "purchases": ("date", ["date", "quantity", "unit_cost", "product_id"]),
+    "salary_history": ("effective_from", ["effective_from", "gross", "employee_id"]),
+}
 
 
 def install_triggers(conn: sqlite3.Connection) -> None:
-    for table, column in LOCKED_TABLES.items():
+    for table, (column, money_columns) in LOCKED_TABLES.items():
+        changed = " OR ".join(f"OLD.{c} IS NOT NEW.{c}" for c in money_columns)
         checks = {
-            "insert": [f"NEW.{column}"],
-            "update": [f"OLD.{column}", f"NEW.{column}"],
-            "delete": [f"OLD.{column}"],
+            "insert": ([f"NEW.{column}"], None),
+            "update": ([f"OLD.{column}", f"NEW.{column}"], changed),
+            "delete": ([f"OLD.{column}"], None),
         }
-        for action, values in checks.items():
-            condition = " OR ".join(
+        for action, (values, extra) in checks.items():
+            locked = " OR ".join(
                 f"substr({value}, 1, 7) IN (SELECT month FROM month_locks)" for value in values)
+            condition = f"({locked}) AND ({extra})" if extra else locked
             conn.execute(f"DROP TRIGGER IF EXISTS lock_{table}_{action}")
             conn.execute(
                 f"CREATE TRIGGER lock_{table}_{action} BEFORE {action.upper()} ON {table} "

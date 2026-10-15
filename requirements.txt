@@ -1,8 +1,9 @@
-fastapi
-uvicorn
-openpyxl
-reportlab
-httpx
-pytest
-python-multipart
-anthropic
+# Versiunile sunt fixate: aplicația și programul Windows se construiesc mereu cu aceleași biblioteci.
+fastapi==0.143.1
+uvicorn==0.53.0
+openpyxl==3.1.5
+reportlab==5.0.1
+httpx==0.28.1
+python-multipart==0.0.32
+anthropic==1.14.0
+defusedxml==0.7.1

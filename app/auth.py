@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 import sqlite3
+import threading
 import time
 
 from fastapi import Cookie, HTTPException
@@ -38,27 +39,41 @@ def check_password(conn: sqlite3.Connection, password: str) -> bool:
 
 
 class AttemptLimiter:
-    """După 5 încercări greșite la rând, parola și codul de recuperare se blochează 5 minute."""
+    """După 5 încercări greșite la rând de pe același dispozitiv, intrarea de pe el se blochează 5 minute.
+
+    Numărătoarea e separată pe adresă IP: cineva din rețea care ghicește parole nu-l poate bloca pe
+    proprietar, care intră de pe calculatorul lui sau de pe telefon.
+    """
 
     def __init__(self, max_failures: int = 5, lock_seconds: int = 300):
         self.max_failures, self.lock_seconds = max_failures, lock_seconds
-        self.failures, self.locked_until = 0, 0.0
+        self.failures: dict[str, int] = {}
+        self.locked_until: dict[str, float] = {}
 
-    def check(self) -> None:
-        remaining = self.locked_until - time.monotonic()
+    def check(self, key: str = "") -> None:
+        remaining = self.locked_until.get(key, 0.0) - time.monotonic()
         if remaining > 0:
             raise HTTPException(status_code=429, detail=f"Prea multe încercări greșite. "
                                 f"Încercați din nou peste {int(remaining // 60) + 1} minute.")
 
-    def failed(self) -> None:
-        self.failures += 1
-        if self.failures >= self.max_failures:
-            self.locked_until = time.monotonic() + self.lock_seconds
-            self.failures = 0
+    def failed(self, key: str = "") -> None:
+        self.failures[key] = self.failures.get(key, 0) + 1
+        if self.failures[key] >= self.max_failures:
+            self.locked_until[key] = time.monotonic() + self.lock_seconds
+            self.failures[key] = 0
 
-    def reset(self) -> None:
-        self.failures, self.locked_until = 0, 0.0
+    def reset(self, key: str | None = None) -> None:
+        if key is None:
+            self.failures.clear()
+            self.locked_until.clear()
+        else:
+            self.failures.pop(key, None)
+            self.locked_until.pop(key, None)
 
+
+# Verificările de parolă / PIN / cod rulează pe rând: cereri trimise în paralel nu pot ocoli
+# numărătoarea de încercări greșite.
+AUTH_LOCK = threading.Lock()
 
 limiter = AttemptLimiter()
 
@@ -95,10 +110,20 @@ def end_all_sessions(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM sessions")
 
 
+def token_hash(token: str) -> str:
+    """În baza de date (și deci în copiile de siguranță) stă doar amprenta sesiunii, nu sesiunea."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def create_session(conn: sqlite3.Connection) -> str:
     token = secrets.token_urlsafe(32)
-    conn.execute("INSERT INTO sessions(token) VALUES (?)", (token,))
+    conn.execute("INSERT INTO sessions(token) VALUES (?)", (token_hash(token),))
     return token
+
+
+def end_session(conn: sqlite3.Connection, token: str | None) -> None:
+    if token:
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token_hash(token),))
 
 
 def idle_limit_minutes(conn: sqlite3.Connection) -> int:
@@ -112,6 +137,7 @@ def is_valid_session(conn: sqlite3.Connection, token: str | None, touch: bool = 
     """Sesiune validă și folosită recent: după inactivitate (implicit 15 minute) aplicația se blochează."""
     if not token:
         return False
+    token = token_hash(token)
     row = conn.execute("SELECT (julianday('now') - julianday(COALESCE(last_seen, created_at))) * 1440 AS idle "
                        "FROM sessions WHERE token = ?", (token,)).fetchone()
     if row is None:

@@ -195,7 +195,8 @@ function showAuth(expired = false) {
   const newPassword = !["login", "pin"].includes(authMode);
   const pin = $("#auth-password");
   pin.inputMode = authMode === "pin" ? "numeric" : "text";
-  pin.minLength = 4;
+  pin.minLength = newPassword ? 8 : 4;
+  $("#auth-confirm").minLength = 8;
   $("#auth-alt").classList.toggle("hidden", !(state.hasPin && ["login", "pin"].includes(authMode)));
   $("#auth-alt").textContent = authMode === "pin" ? "Intră cu parola" : "Intră cu PIN-ul";
   $("#auth-title").textContent = text.title;
@@ -239,7 +240,17 @@ function armIdleLock() {
     showAuth(true);
   }, state.idleMinutes * 60 * 1000);
 }
-["pointerdown", "keydown", "scroll", "touchstart"].forEach((ev) => window.addEventListener(ev, () => armIdleLock(), { passive: true }));
+// Cât timp lucrați (scrieți într-un formular, derulați), serverul află că sunteți activ, ca sesiunea
+// să nu expire în mijlocul unui formular lung. Cel mult un semnal pe minut.
+let lastPing = Date.now();
+function onActivity() {
+  armIdleLock();
+  if (Date.now() - lastPing > 60000 && !$("#app").classList.contains("hidden")) {
+    lastPing = Date.now();
+    fetch("/api/auth/status", { credentials: "same-origin" }).catch(() => {});
+  }
+}
+["pointerdown", "keydown", "scroll", "touchstart"].forEach((ev) => window.addEventListener(ev, onActivity, { passive: true }));
 
 $("#auth-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1359,7 +1370,9 @@ const URGENCY = { now: ["Comandați acum", "late"], week: ["Săptămâna aceasta
 
 // Comenzi recomandate: ce, cât, de la cine și până când, după ritmul vânzărilor și termenul de livrare.
 async function mountReorder(panel) {
-  const r = await api("/api/reorder");
+  let r;
+  try { r = await api("/api/reorder"); }
+  catch (err) { panel.innerHTML = `<div class="card glass">${emptyState(esc(err.message))}</div>`; return; }
   panel.innerHTML = `
     <div class="card glass">
       <div class="card-head"><div><h2>${icon("truck")} Comenzi recomandate</h2>
@@ -1380,7 +1393,7 @@ async function mountReorder(panel) {
             <td class="r">${String(l.daily).replace(".", ",")}</td><td>${l.daily ? formatDate(l.run_out) : "—"}</td>
             <td><span class="tag ${URGENCY[l.urgency][1]}">${l.urgency === "now" ? "azi" : formatDate(l.order_by)}</span></td>
             <td class="r"><b>${l.quantity} buc.</b></td><td class="r">${lei(l.value)}</td>
-            <td class="actions"><button class="btn btn-sm" type="button" data-receive="${l.product_id}" title="Marfa a sosit: recepție">${icon("box")}Recepție</button></td></tr>`).join("")}
+            <td class="actions"><button class="btn btn-sm" type="button" data-receive="${l.product_id}" data-qty="${l.quantity}" title="Marfa a sosit: recepție">${icon("box")}Recepție</button></td></tr>`).join("")}
         </tbody></table></div>
       </article>`).join("")}`;
   panel.addEventListener("click", async (e) => {
@@ -1415,13 +1428,13 @@ function productPayload(form) {
     opening_stock: Number(d.opening_stock) || 0, active: true };
 }
 
-function openReceive(productId) {
+function openReceive(productId, quantity) {
   const p = state.products.find((x) => x.id === productId);
   openModal("Recepție marfă (NIR)", `<form id="nir-form">
     <div class="form-grid">
       <label class="field" style="grid-column:1/-1"><span>Produs</span><select name="product_id" required>${productOptions(productId)}</select></label>
       <label class="field"><span>Data</span><input type="date" name="date" required value="${todayISO()}"></label>
-      <label class="field"><span>Cantitate primită</span><input type="number" name="quantity" min="1" step="1" required value="${p ? Math.max(p.min_stock * 2 - p.stock, 1) : 1}"></label>
+      <label class="field"><span>Cantitate primită</span><input type="number" name="quantity" min="1" step="1" required value="${quantity || (p ? Math.max(p.min_stock * 2 - p.stock, 1) : 1)}"></label>
       <label class="field"><span>Cost / buc. fără TVA</span><input type="number" name="unit_cost" min="0.01" step="0.01" value="${p ? p.cost : ""}"></label>
       <label class="field" style="grid-column:span 2"><span>Furnizor</span><input name="supplier" maxlength="120" value="${esc(p?.supplier || "")}"></label>
       <label class="field"><span>Nr. NIR (opțional)</span><input name="doc_number" maxlength="40" placeholder="automat"></label>
@@ -1550,7 +1563,7 @@ async function renderStock(view) {
   });
   view.addEventListener("click", async (e) => {
     const receive = e.target.closest("[data-receive]"), edit = e.target.closest("[data-edit-product]"), delNir = e.target.closest("[data-del-nir]");
-    if (receive) openReceive(Number(receive.dataset.receive));
+    if (receive) openReceive(Number(receive.dataset.receive), Number(receive.dataset.qty) || undefined);
     if (edit) {
       const p = products.find((x) => x.id === Number(edit.dataset.editProduct));
       openModal(`Editează ${p.name}`, `<form id="product-form">${productFormHTML(p)}
@@ -2461,7 +2474,7 @@ async function renderSettings(view) {
           <div class="card-head"><div><h2>Schimbă parola</h2><p>Doar dumneavoastră aveți acces la aplicație.</p></div></div>
           <form id="password-form" class="form-grid">
             <label class="field"><span>Parola actuală</span><input type="password" name="current" required autocomplete="current-password"></label>
-            <label class="field"><span>Parola nouă</span><input type="password" name="new" required minlength="4" autocomplete="new-password"></label>
+            <label class="field"><span>Parola nouă</span><input type="password" name="new" required minlength="8" autocomplete="new-password"><small>Cel puțin 8 caractere.</small></label>
             <div class="form-actions" style="grid-column:1/-1;margin-top:0"><button class="btn" type="submit">${icon("check")}Schimbă parola</button></div>
           </form>
           <div class="recovery-status ${state.hasRecovery ? "" : "missing"}">
@@ -2547,6 +2560,7 @@ async function renderSettings(view) {
       $("#brand-name").textContent = body.company_name;
       state.ownerName = body.owner_name;
       toast("Setările au fost salvate.");
+      render();  // formularul de siguranță primește valorile noi (altfel le-ar trimite pe cele vechi)
     } catch (err) { toast(err.message, "err"); }
   });
   $("#fiscal-check").addEventListener("click", async (e) => {
@@ -2654,7 +2668,7 @@ async function efacturaPreview(files) {
   if (!state.products?.length) await loadCatalog();
   if (!state.categories?.length) await loadCategories();
   const productSelect = (line) => `<select data-field="target">
-      <option value="product" ${line.target === "product" ? "selected" : ""} ${line.quantity % 1 ? "disabled" : ""}>Marfă în stoc</option>
+      <option value="product" ${line.target === "product" ? "selected" : ""} ${line.can_stock ? "" : "disabled"}>Marfă în stoc</option>
       <option value="expense" ${line.target === "expense" ? "selected" : ""}>Cheltuială</option>
       <option value="skip">Nu importa</option></select>
     <select data-field="product_id" class="${line.target === "product" ? "" : "hidden"}">${state.products.map((p) => `<option value="${p.id}" ${p.id === line.product_id ? "selected" : ""}>${esc(p.code)} · ${esc(p.name)}</option>`).join("")}</select>

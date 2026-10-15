@@ -289,6 +289,11 @@ def init_db() -> None:
         from . import audit, closing
         audit.install_triggers(conn)
         closing.install_triggers(conn)
+        try:  # plasă de siguranță: două facturi nu pot avea același număr
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_invoice_unique ON sales(invoice_number) "
+                         "WHERE invoice_number IS NOT NULL AND invoice_number != ''")
+        except sqlite3.IntegrityError:
+            pass  # date vechi cu numere duplicate: verificarea din aplicație rămâne
 
 
 def get_settings(conn: sqlite3.Connection) -> dict:

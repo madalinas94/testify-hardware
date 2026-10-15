@@ -19,11 +19,26 @@ from openpyxl import Workbook
 from .db import connect, db_path
 
 KEEP = 30
-NAME_RE = re.compile(r"^testify-[0-9T_-]+(-[a-z-]+)?\.db$")
+NAME_RE = re.compile(r"^testify-[0-9T_-]+(-[a-z0-9-]+)?\.db$")
+MAX_RESTORE_BYTES = 500 * 1024 * 1024  # o bază Testify are câțiva MB; mai mult = fișier greșit sau „bombă” ZIP
 REQUIRED_TABLES = {"settings", "sales", "expenses", "products"}
 EXPORT_TABLES = ["sales", "expenses", "purchases", "products", "clients", "suppliers", "employees",
                  "salary_history", "absences", "categories", "goals", "month_locks", "fiscal_rules", "audit_log"]
 SECRET_SETTINGS = ("anthropic_api_key",)
+
+
+def strip_secrets(path: Path) -> None:
+    """Copiile nu conțin cheia AI și nici sesiunile deschise: cine găsește un stick sau folderul
+    din cloud nu poate intra în aplicație și nu poate folosi cheia plătită."""
+    conn = sqlite3.connect(path)
+    try:
+        for key in SECRET_SETTINGS:
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        conn.execute("DELETE FROM sessions")
+        conn.commit()
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
 
 
 def backup_dir() -> Path:
@@ -47,6 +62,7 @@ def create_backup(label: str = "") -> dict:
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     name = f"testify-{stamp}{'-' + label if label else ''}.db"
     copy_database(backup_dir() / name)
+    strip_secrets(backup_dir() / name)
     prune()
     mirror(backup_dir() / name)
     return describe(backup_dir() / name)
@@ -153,19 +169,32 @@ def check_database(path: Path) -> None:
         raise ValueError("Fișierul nu este o copie de siguranță Testify.") from None
     if not REQUIRED_TABLES <= tables:
         raise ValueError("Fișierul nu este o copie de siguranță Testify.")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        has_password = conn.execute("SELECT 1 FROM settings WHERE key = 'password_hash'").fetchone()
+    finally:
+        conn.close()
+    if not has_password:
+        # O copie făcută înainte de alegerea parolei ar lăsa aplicația fără parolă și fără date.
+        raise ValueError("Copia este goală (făcută înainte de prima pornire). Alegeți altă copie.")
 
 
 def restore_from(path: Path) -> dict:
     """Înlocuiește datele actuale cu copia; înainte, salvează starea de acum (se poate reveni)."""
     check_database(path)
-    safety = create_backup("inainte-de-restaurare")
-    source = sqlite3.connect(path)
-    destination = connect()
-    try:
-        source.backup(destination)
-    finally:
-        source.close()
-        destination.close()
+    with tempfile.TemporaryDirectory() as tmp:
+        # Copia se ia deoparte ÎNAINTE de copia de siguranță: aceea poate șterge cea mai veche copie
+        # din folder (se păstrează doar ultimele 30), adică exact pe cea care se restaurează.
+        staged = Path(tmp) / "restore.db"
+        shutil.copy2(path, staged)
+        safety = create_backup("inainte-de-restaurare")
+        source = sqlite3.connect(staged)
+        destination = connect()
+        try:
+            source.backup(destination)
+        finally:
+            source.close()
+            destination.close()
     return safety
 
 
@@ -175,6 +204,8 @@ def restore_upload(content: bytes, filename: str) -> dict:
         if filename.lower().endswith(".zip"):
             try:
                 with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                    if archive.getinfo("testify.db").file_size > MAX_RESTORE_BYTES:
+                        raise ValueError("Baza de date din arhivă este prea mare.")
                     with archive.open("testify.db") as member, open(target, "wb") as out:
                         shutil.copyfileobj(member, out)
             except (zipfile.BadZipFile, KeyError):
@@ -190,11 +221,9 @@ def full_export() -> bytes:
     with tempfile.TemporaryDirectory() as tmp:
         copy = Path(tmp) / "testify.db"
         copy_database(copy)
+        strip_secrets(copy)  # cheia AI și sesiunile nu pleacă din calculator
         conn = sqlite3.connect(copy)
         conn.row_factory = sqlite3.Row
-        for key in SECRET_SETTINGS:  # cheia AI nu pleacă din calculator
-            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
-        conn.commit()
         book = Workbook()
         book.remove(book.active)
         for table in EXPORT_TABLES:

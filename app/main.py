@@ -4,13 +4,16 @@ Pornire: uvicorn app.main:app --host 0.0.0.0 --port 8000 (din folderul testify_h
 """
 
 import asyncio
+import ipaddress
+import os
 import re
+import socket
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import (APIRouter, Cookie, Depends, FastAPI, File, Form, HTTPException, Query,
+from fastapi import (APIRouter, Cookie, Depends, FastAPI, File, Form, HTTPException, Query, Request,
                      Response, UploadFile)
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -65,6 +68,34 @@ app = FastAPI(title="Testify Hardware", description="Aplicația internă pentru 
               lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+
+def host_allowed(header: str) -> bool:
+    """Doar adrese IP, localhost și numele calculatorului din rețeaua locală.
+
+    Un site rău-intenționat deschis în browser nu poate „împrumuta” aplicația prin propriul lui
+    nume de domeniu (atacul „DNS rebinding”): cererea lui ajunge cu numele acelui site și e refuzată.
+    """
+    host = header.strip().lower()
+    host = host[1:host.find("]")] if host.startswith("[") else host.rsplit(":", 1)[0]
+    if not host or host in {"localhost", "testserver"} or host.endswith((".local", ".lan", ".home")):
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    machine = socket.gethostname().lower()
+    extra = {h.strip().lower() for h in os.environ.get("TESTIFY_ALLOWED_HOSTS", "").split(",") if h.strip()}
+    return host in {machine, machine.split(".")[0]} | extra
+
+
+@app.middleware("http")
+async def check_host(request, call_next):
+    if not host_allowed(request.headers.get("host", "")):
+        return JSONResponse(status_code=400, content={"detail": "Adresă necunoscută. Deschideți aplicația cu "
+                                                      "adresa IP a calculatorului sau cu localhost."})
+    return await call_next(request)
+
 FIELD_NAMES = {
     "date": "data", "amount": "suma", "quantity": "cantitatea", "unit_price": "prețul", "unit_cost": "costul",
     "cost_total": "costul mărfii", "sale_price": "prețul de vânzare", "cost": "costul", "gross": "salariul brut",
@@ -111,6 +142,8 @@ async def validation_error(_request, exc: RequestValidationError):
 async def database_error(_request, exc: sqlite3.DatabaseError):
     if closing.is_lock_error(exc):
         return JSONResponse(status_code=400, content={"detail": CLOSED_MESSAGE})
+    if "sales.invoice_number" in str(exc):
+        return JSONResponse(status_code=400, content={"detail": "Numărul facturii există deja. Încercați din nou."})
     raise exc
 
 
@@ -162,25 +195,36 @@ def unique_name_error(kind: str) -> HTTPException:
 # ---------- Autentificare ----------
 
 class PasswordIn(BaseModel):
-    password: str = Field(min_length=4, max_length=200)
+    password: str = Field(min_length=4, max_length=200)  # la intrare: și parolele vechi, mai scurte
 
 
-class SetupIn(PasswordIn):
+NEW_PASSWORD = Field(min_length=8, max_length=200)  # o parolă nouă: cel puțin 8 caractere
+
+
+class SetupIn(BaseModel):
+    password: str = NEW_PASSWORD
     demo: bool = False
 
 
 class ChangePasswordIn(BaseModel):
     current: str
-    new: str = Field(min_length=4, max_length=200)
+    new: str = NEW_PASSWORD
 
 
 class RecoverIn(BaseModel):
     code: str = Field(min_length=4, max_length=40)
-    password: str = Field(min_length=4, max_length=200)
+    password: str = NEW_PASSWORD
 
 
 class CurrentPasswordIn(BaseModel):
     current: str
+
+
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+def client_key(request: Request) -> str:
+    return request.client.host if request.client else ""
 
 
 def start_session(response: Response, conn) -> None:
@@ -205,8 +249,12 @@ def auth_status(testify_session: str | None = Cookie(default=None)):
 
 
 @app.post("/api/auth/setup")
-def auth_setup(body: SetupIn, response: Response):
-    with get_conn() as conn:
+def auth_setup(body: SetupIn, request: Request, response: Response):
+    # Prima parolă se alege doar de pe calculatorul pe care rulează aplicația, nu de oriunde din rețea.
+    if client_key(request) not in LOCAL_HOSTS:
+        raise HTTPException(status_code=403, detail="Prima pornire se face de pe calculatorul pe care rulează "
+                            "aplicația (http://localhost:8000). După aceea merge și de pe telefon.")
+    with auth.AUTH_LOCK, get_conn() as conn:
         if auth.is_setup_done(conn):
             raise HTTPException(status_code=400, detail="Parola a fost deja setată.")
         auth.set_password(conn, body.password)
@@ -220,15 +268,17 @@ def auth_setup(body: SetupIn, response: Response):
 
 
 @app.post("/api/auth/login")
-def auth_login(body: PasswordIn, response: Response):
-    auth.limiter.check()
-    with get_conn() as conn:
-        if not auth.check_password(conn, body.password):
-            auth.limiter.failed()
-            raise HTTPException(status_code=401, detail="Parolă greșită.")
-        auth.limiter.reset()
-        auth.unlock_pin(conn)
-        start_session(response, conn)
+def auth_login(body: PasswordIn, request: Request, response: Response):
+    key = client_key(request)
+    with auth.AUTH_LOCK:
+        auth.limiter.check(key)
+        with get_conn() as conn:
+            if not auth.check_password(conn, body.password):
+                auth.limiter.failed(key)
+                raise HTTPException(status_code=401, detail="Parolă greșită.")
+            auth.limiter.reset(key)
+            auth.unlock_pin(conn)
+            start_session(response, conn)
     return {"ok": True}
 
 
@@ -237,41 +287,45 @@ class PinIn(BaseModel):
 
 
 @app.post("/api/auth/pin-login")
-def auth_pin_login(body: PinIn, response: Response):
-    auth.limiter.check()
-    with get_conn() as conn:
-        if not auth.has_pin(conn):
-            raise HTTPException(status_code=400, detail="PIN-ul nu este activ. Intrați cu parola.")
-        if not auth.check_pin(conn, body.pin):
-            auth.limiter.failed()
-            conn.commit()  # greșeala se numără chiar dacă cererea se termină cu eroare
-            left = auth.has_pin(conn)
-            raise HTTPException(status_code=401, detail="PIN greșit." if left else
-                                "PIN greșit de 3 ori: intrați acum cu parola (PIN-ul se reactivează după).")
-        start_session(response, conn)
+def auth_pin_login(body: PinIn, request: Request, response: Response):
+    key = client_key(request)
+    with auth.AUTH_LOCK:
+        auth.limiter.check(key)
+        with get_conn() as conn:
+            if not auth.has_pin(conn):
+                raise HTTPException(status_code=400, detail="PIN-ul nu este activ. Intrați cu parola.")
+            if not auth.check_pin(conn, body.pin):
+                auth.limiter.failed(key)
+                conn.commit()  # greșeala se numără chiar dacă cererea se termină cu eroare
+                left = auth.has_pin(conn)
+                raise HTTPException(status_code=401, detail="PIN greșit." if left else
+                                    "PIN greșit de 3 ori: intrați acum cu parola (PIN-ul se reactivează după).")
+            start_session(response, conn)
     return {"ok": True}
 
 
 @app.post("/api/auth/recover")
-def auth_recover(body: RecoverIn, response: Response):
+def auth_recover(body: RecoverIn, request: Request, response: Response):
     """Parolă uitată: cu codul de recuperare se pune o parolă nouă și se primește un cod nou."""
-    auth.limiter.check()
-    with get_conn() as conn:
-        if not auth.check_recovery_code(conn, body.code):
-            auth.limiter.failed()
-            raise HTTPException(status_code=400, detail="Codul de recuperare nu este corect.")
-        auth.limiter.reset()
-        auth.set_password(conn, body.password)
-        auth.end_all_sessions(conn)  # cine era conectat cu parola veche iese
-        code = auth.set_recovery_code(conn)  # codul folosit nu mai e valabil
-        start_session(response, conn)
+    key = client_key(request)
+    with auth.AUTH_LOCK:
+        auth.limiter.check(key)
+        with get_conn() as conn:
+            if not auth.check_recovery_code(conn, body.code):
+                auth.limiter.failed(key)
+                raise HTTPException(status_code=400, detail="Codul de recuperare nu este corect.")
+            auth.limiter.reset(key)
+            auth.set_password(conn, body.password)
+            auth.end_all_sessions(conn)  # cine era conectat cu parola veche iese
+            code = auth.set_recovery_code(conn)  # codul folosit nu mai e valabil
+            start_session(response, conn)
     return {"ok": True, "recovery_code": code}
 
 
 @app.post("/api/auth/logout")
 def auth_logout(response: Response, testify_session: str | None = Cookie(default=None)):
     with get_conn() as conn:
-        conn.execute("DELETE FROM sessions WHERE token = ?", (testify_session,))
+        auth.end_session(conn, testify_session)
     response.delete_cookie(auth.COOKIE_NAME)
     return {"ok": True}
 
@@ -281,11 +335,13 @@ api = APIRouter(prefix="/api", dependencies=[Depends(auth.require_login)])
 
 
 @api.post("/auth/change-password")
-def change_password(body: ChangePasswordIn):
-    with get_conn() as conn:
+def change_password(body: ChangePasswordIn, response: Response):
+    with auth.AUTH_LOCK, get_conn() as conn:
         if not auth.check_password(conn, body.current):
             raise HTTPException(status_code=400, detail="Parola actuală nu este corectă.")
         auth.set_password(conn, body.new)
+        auth.end_all_sessions(conn)  # telefonul pierdut sau alt dispozitiv iese; acest dispozitiv rămâne conectat
+        start_session(response, conn)
     return {"ok": True}
 
 
@@ -496,6 +552,7 @@ def get_next_invoice():
 @api.post("/sales", status_code=201)
 def create_sale(body: SaleIn):
     with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")  # numărul facturii se alege și se scrie fără ca altcineva să intervină
         values = sale_values(conn, body)
         values["invoice_number"] = (body.invoice_number or "").strip() or next_invoice_number(conn)
         check_invoice_unique(conn, values["invoice_number"])
@@ -513,9 +570,11 @@ def create_sale(body: SaleIn):
 def update_sale(sale_id: int, body: SaleIn):
     with get_conn() as conn:
         values = sale_values(conn, body)
-        old = conn.execute("SELECT product_id, storno_of FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        old = conn.execute("SELECT product_id, storno_of, unit_cost FROM sales WHERE id = ?", (sale_id,)).fetchone()
         if not old:
             raise HTTPException(status_code=404, detail="Vânzarea nu există.")
+        if values["product_id"] and values["product_id"] == old["product_id"]:
+            values["unit_cost"] = old["unit_cost"]  # costul mărfii rămâne cel de la data vânzării
         if old["storno_of"] or has_returns(conn, sale_id):
             raise HTTPException(status_code=400, detail="Factura are o stornare legată de ea și nu se mai "
                                 "poate modifica. Ștergeți stornarea întâi sau faceți încă un retur.")
@@ -552,6 +611,7 @@ def has_returns(conn, sale_id: int) -> bool:
 def return_sale(sale_id: int, body: ReturnIn):
     """Stornare totală sau parțială: factură nouă, cu minus, legată de cea inițială."""
     with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         original = conn.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
         if not original:
             raise HTTPException(status_code=404, detail="Vânzarea nu există.")
@@ -665,9 +725,9 @@ def update_expense(expense_id: int, body: ExpenseIn):
         check_category(conn, body.category)
         cursor = conn.execute(
             "UPDATE expenses SET date = ?, category = ?, description = ?, amount = ?, supplier = ?, "
-            "vat_kind = ? WHERE id = ?",
+            "vat_kind = ?, doc_number = ? WHERE id = ?",
             (body.date, body.category, body.description, body.amount, body.supplier, body.vat_kind,
-             expense_id),
+             body.doc_number.strip(), expense_id),
         )
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Cheltuiala nu există.")
@@ -764,7 +824,10 @@ def create_product(body: ProductIn):
             "INSERT INTO products(code, name, category, supplier, sale_price, cost, min_stock, "
             "opening_stock, opening_date, active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (body.code, body.name, body.category, body.supplier, body.sale_price, body.cost,
-             body.min_stock, body.opening_stock, date.today().isoformat(), int(body.active)),
+             body.min_stock, body.opening_stock,
+             # Fără stoc inițial, nu e nevoie de o dată de pornire: recepțiile mai vechi (de exemplu o
+             # e-Factură de săptămâna trecută) intră și ele în stoc.
+             date.today().isoformat() if body.opening_stock else None, int(body.active)),
         )
     return {"id": cursor.lastrowid}
 
@@ -1127,9 +1190,23 @@ def create_employee(body: NewEmployeeIn):
     return {"id": cursor.lastrowid}
 
 
+def touches_closed_month(conn, old_day: str | None, new_day: str | None) -> bool:
+    """O dată mutată (angajare/plecare) schimbă salariile lunilor dintre vechea și noua dată."""
+    if old_day == new_day:
+        return False
+    days = [d for d in (old_day, new_day) if d]
+    first = min(days)[:7]
+    last = max(days)[:7] if all(days) else "9999-12"
+    return conn.execute("SELECT 1 FROM month_locks WHERE month BETWEEN ? AND ?", (first, last)).fetchone() is not None
+
+
 @api.put("/employees/{employee_id}")
 def update_employee(employee_id: int, body: EmployeeIn):
     with get_conn() as conn:
+        old = conn.execute("SELECT hire_date, end_date FROM employees WHERE id = ?", (employee_id,)).fetchone()
+        if old and (touches_closed_month(conn, old["hire_date"], body.hire_date)
+                    or touches_closed_month(conn, old["end_date"], body.end_date)):
+            raise HTTPException(status_code=400, detail=CLOSED_MESSAGE)
         cursor = conn.execute(
             "UPDATE employees SET name = ?, role = ?, hire_date = ?, end_date = ?, notes = ?, hours_per_day = ?, "
             "leave_days = ? WHERE id = ?",
@@ -1236,12 +1313,20 @@ def read_settings():
 
 @api.put("/settings")
 def write_settings(body: SettingsIn):
-    try:
-        body.backup_extra_dir = backup.check_extra_dir(body.backup_extra_dir)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error))
     with get_conn() as conn:
         old = get_settings(conn)
+    if body.backup_extra_dir.strip() != old.get("backup_extra_dir", ""):
+        # Se verifică doar când se schimbă: un stick scos nu blochează salvarea celorlalte setări.
+        try:
+            body.backup_extra_dir = backup.check_extra_dir(body.backup_extra_dir)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+    with get_conn() as conn:
+        regime_changed = (body.tax_regime != old.get("tax_regime")
+                          or ("1" if body.vat_payer else "0") != old.get("vat_payer", "1"))
+        if regime_changed and conn.execute("SELECT 1 FROM month_locks").fetchone():
+            raise HTTPException(status_code=400, detail="Regimul de impozitare și TVA se aplică tuturor lunilor, "
+                                "inclusiv celor închise. Redeschideți întâi lunile închise (Rapoarte), apoi schimbați.")
         changed = []
         for key, value in body.model_dump().items():
             text = ("1" if value else "0") if isinstance(value, bool) else str(value)
@@ -1325,22 +1410,31 @@ def make_backup():
     return backup.create_backup("manual")
 
 
-def after_restore(token: str | None) -> None:
-    """După restaurare: schema adusă la zi și sesiunea curentă păstrată (nu e scos afară)."""
+def current_ai_key() -> str:
+    with get_conn() as conn:
+        return get_settings(conn).get("anthropic_api_key", "")
+
+
+def after_restore(token: str | None, ai_key: str = "") -> None:
+    """După restaurare: schema adusă la zi, cheia AI de acum păstrată (copiile nu o conțin) și
+    sesiunea curentă păstrată (proprietarul nu e scos afară)."""
     init_db()
     with get_conn() as conn:
+        if ai_key and not get_settings(conn).get("anthropic_api_key"):
+            set_setting(conn, "anthropic_api_key", ai_key)
         if token:
-            conn.execute("INSERT OR IGNORE INTO sessions(token) VALUES (?)", (token,))
+            conn.execute("INSERT OR IGNORE INTO sessions(token) VALUES (?)", (auth.token_hash(token),))
         audit.log_event(conn, "Datele au fost restaurate dintr-o copie de siguranță", "backup")
 
 
 @api.post("/backups/{name}/restore")
 def restore_backup(name: str, testify_session: str | None = Cookie(default=None)):
+    ai_key = current_ai_key()
     try:
         safety = backup.restore_from(backup.backup_path(name))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
-    after_restore(testify_session)
+    after_restore(testify_session, ai_key)
     return {"ok": True, "safety_backup": safety["name"]}
 
 
@@ -1349,11 +1443,12 @@ async def restore_upload(file: UploadFile = File(...), testify_session: str | No
     data = await file.read()
     if len(data) > 200 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Fișierul este prea mare.")
+    ai_key = current_ai_key()
     try:
         safety = await asyncio.to_thread(backup.restore_upload, data, file.filename or "")
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
-    after_restore(testify_session)
+    after_restore(testify_session, ai_key)
     return {"ok": True, "safety_backup": safety["name"]}
 
 
@@ -1504,7 +1599,7 @@ async def efactura_preview(files: list[UploadFile] = File(...)):
 
 class EFacturaLineIn(BaseModel):
     name: str = Field(max_length=300)
-    quantity: float = Field(gt=0, le=1_000_000)
+    quantity: float = Field(ge=-1_000_000, le=1_000_000)  # cu minus pe liniile de retur
     net: float = Field(ge=-MAX_AMOUNT, le=MAX_AMOUNT)
     vat_rate: float = Field(ge=0, le=100)
     target: str = Field(pattern="^(product|expense|skip)$")

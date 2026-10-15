@@ -11,7 +11,10 @@ import re
 import unicodedata
 import zipfile
 from datetime import date, timedelta
-from xml.etree import ElementTree
+from xml.etree.ElementTree import ParseError
+
+from defusedxml import DefusedXmlException
+from defusedxml.ElementTree import fromstring
 
 NS = {
     "cbc": "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
@@ -38,6 +41,10 @@ KEYWORDS = [
 ]
 
 
+MAX_XML_BYTES = 20 * 1024 * 1024   # o e-Factură are câțiva KB; peste asta e un fișier greșit
+MAX_ZIP_ENTRIES = 200
+
+
 class EFacturaError(ValueError):
     pass
 
@@ -52,8 +59,11 @@ def xml_documents(filename: str, content: bytes) -> list[tuple[str, bytes]]:
     if filename.lower().endswith(".zip"):
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
-                return [(name, archive.read(name)) for name in archive.namelist()
-                        if name.lower().endswith(".xml") and "semnatura" not in name.lower()]
+                entries = [info for info in archive.infolist()
+                           if info.filename.lower().endswith(".xml") and "semnatura" not in info.filename.lower()]
+                if len(entries) > MAX_ZIP_ENTRIES or any(info.file_size > MAX_XML_BYTES for info in entries):
+                    raise EFacturaError(f"„{filename}” conține fișiere prea multe sau prea mari.")
+                return [(info.filename, archive.read(info)) for info in entries]
         except zipfile.BadZipFile:
             raise EFacturaError(f"„{filename}” nu este o arhivă ZIP validă.") from None
     return [(filename, content)]
@@ -73,11 +83,14 @@ def number(node, path: str) -> float:
 
 
 def parse_invoice(filename: str, content: bytes) -> dict:
-    if b"<!DOCTYPE" in content[:2000] or b"<!ENTITY" in content[:4000]:
-        raise EFacturaError(f"„{filename}” conține construcții XML nepermise.")
+    if len(content) > MAX_XML_BYTES:
+        raise EFacturaError(f"„{filename}” este prea mare pentru o e-Factură.")
     try:
-        root = ElementTree.fromstring(content)
-    except ElementTree.ParseError:
+        # defusedxml refuză entitățile și DTD-urile (fișiere XML construite ca să atace aplicația).
+        root = fromstring(content, forbid_dtd=True)
+    except DefusedXmlException:
+        raise EFacturaError(f"„{filename}” conține construcții XML nepermise.") from None
+    except ParseError:
         raise EFacturaError(f"„{filename}” nu este un XML valid.") from None
     kind = root.tag.split("}")[-1]
     if kind not in ("Invoice", "CreditNote"):
@@ -184,8 +197,12 @@ def preview(conn, files: list[tuple[str, bytes]]) -> dict:
                 continue
             invoice["duplicate"] = already_imported(conn, invoice["supplier"], invoice["number"])
             for line in invoice["lines"]:
-                product = None if invoice["credit_note"] else match_product(line, products, invoice["supplier"])
+                # Doar marfa intrată (cantitate pozitivă, sumă pozitivă) merge în stoc; retururile și notele
+                # de credit scad cheltuielile.
+                incoming = not invoice["credit_note"] and line["quantity"] > 0 and line["net"] > 0
+                product = match_product(line, products, invoice["supplier"]) if incoming else None
                 whole = float(line["quantity"]).is_integer()
+                line["can_stock"] = incoming and whole
                 if product and whole:
                     line.update(target="product", product_id=product["id"], product_name=product["name"])
                 else:
@@ -213,6 +230,9 @@ def save(conn, invoices: list[dict], supplier_terms) -> dict:
                 continue
             if line.get("target") == "product" and line.get("product_id"):
                 quantity = int(round(line["quantity"]))
+                if line["net"] <= 0:
+                    raise EFacturaError(f"Factura {invoice['number']}: „{line['name']}” are suma negativă (retur) "
+                                        "și nu poate intra în stoc. Alegeți „Cheltuială”.")
                 if quantity <= 0:
                     raise EFacturaError(f"Factura {invoice['number']}: cantitatea pentru „{line['name']}” "
                                         "trebuie să fie pozitivă.")

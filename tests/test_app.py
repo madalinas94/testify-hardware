@@ -286,7 +286,7 @@ def test_too_many_wrong_attempts_lock_temporarily(monkeypatch):
         client.cookies.clear()
         for _ in range(5):
             assert client.post("/api/auth/recover", json={"code": "AAAA-BBBB-CCCC-DDDD",
-                                                           "password": "x1234"}).status_code == 400
+                                                           "password": "x1234567"}).status_code == 400
         # Blocat: nici parola corectă nu merge câteva minute.
         assert client.post("/api/auth/login", json={"password": "corecta1"}).status_code == 429
         from app import auth

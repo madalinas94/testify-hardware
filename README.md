@@ -10,6 +10,9 @@ schimbă Codul fiscal.
 
 ## Cum o deschideți (pe scurt)
 
+Ghidul de folosire, pe o pagină: [GHID-ROBERT.md](GHID-ROBERT.md).
+
+
 **Varianta cea mai simplă (Windows, fără Python):** în tabul **Actions → Program Windows (.exe)**,
 deschideți ultima rulare verde și descărcați **TestifyHardware-Windows** (sau, dacă există, arhiva
 din **Releases**). Dezarhivați, dublu-click pe `TestifyHardware.exe` și aplicația se deschide în
@@ -195,6 +198,23 @@ Nimic nu se aplică fără aprobare. Propunerile, proiectele și zvonurile neado
 O verificare costă câțiva cenți până la câteva zeci de cenți din contul Anthropic (căutări pe
 internet plus răspunsul modelului `claude-opus-5-5`).
 
+## Siguranță
+
+- Un singur utilizator, cu parolă de cel puțin 8 caractere (PBKDF2), cod de recuperare și PIN opțional pe
+  telefon. După 5 încercări greșite de pe același dispozitiv, intrarea de pe el se blochează 5 minute; după
+  3 PIN-uri greșite se cere parola. Prima parolă se alege doar de pe calculatorul pe care rulează aplicația.
+- Sesiunile expiră după 15 minute fără activitate (configurabil) și sunt păstrate doar ca amprentă.
+  Schimbarea parolei scoate din aplicație toate celelalte dispozitive.
+- Copiile de siguranță nu conțin cheia AI și nici sesiunile deschise.
+- Aplicația răspunde doar la adrese IP, `localhost` și numele calculatorului (protecție la „DNS rebinding”).
+  Alte nume se pot adăuga cu variabila `TESTIFY_ALLOWED_HOSTS`.
+- Fișierele importate (Excel, CSV, e-Factura, arhive ZIP) sunt verificate: XML fără entități (defusedxml),
+  limite de mărime, formule Excel neutralizate la export.
+- În rețeaua de la birou, legătura dintre telefon și calculator este HTTP simplu: folosiți o rețea Wi-Fi cu
+  parolă, fără acces pentru vizitatori.
+- Regulile fiscale vin din acest repository: o modificare intră în aplicații doar după ce un om acceptă
+  propunerea (pull request), deci accesul la contul GitHub trebuie păzit (autentificare în doi pași).
+
 ## Cum se calculează
 
 - **Salariu:** CAS 25% și CASS 10% din brut; impozit pe venit 10% din (brut − CAS − CASS);
@@ -236,7 +256,7 @@ de cheltuielile nedeductibile sau de facilitățile fiscale. Cifrele oficiale r�
 - **Interfață:** HTML, CSS și JavaScript simplu, cu grafice Chart.js (inclus local, merge și fără internet)
 - **Telefon:** manifest de aplicație web și service worker (`app/static/manifest.webmanifest`, `sw.js`)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Teste:** `pip install -r requirements.txt && pytest` (rulează automat pe GitHub la fiecare modificare),
+- **Teste:** `pip install -r requirements-dev.txt && pytest` (rulează automat pe GitHub la fiecare modificare),
   inclusiv un test de performanță cu 5 ani de date și teste de interfață în care un browser real apasă
   butoanele (`tests/e2e`, cu Playwright)
 - **Program Windows:** `pyinstaller testify.spec` (construit automat pe GitHub, pe un calculator Windows)
